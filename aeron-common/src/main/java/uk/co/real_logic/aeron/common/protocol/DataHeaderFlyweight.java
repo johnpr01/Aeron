@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Real Logic Ltd.
+ * Copyright 2014 - 2015 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -177,5 +177,24 @@ public class DataHeaderFlyweight extends HeaderFlyweight
         buffer.putInt(TERM_ID_FIELD_OFFSET, termId, ByteOrder.LITTLE_ENDIAN);
 
         return buffer;
+    }
+
+    public String toString()
+    {
+        final StringBuilder sb = new StringBuilder();
+        final String formattedFlags = String.format("%1$8s", Integer.toBinaryString(flags())).replace(' ', '0');
+
+        sb.append("Data Header{")
+            .append("version=").append(version())
+            .append(" flags=").append(formattedFlags)
+            .append(" type=").append(headerType())
+            .append(" frame_length=").append(frameLength())
+            .append(" term_offset=").append(termOffset())
+            .append(" session_id=").append(sessionId())
+            .append(" stream_id=").append(streamId())
+            .append(" term_id=").append(termId())
+            .append("}");
+
+        return sb.toString();
     }
 }

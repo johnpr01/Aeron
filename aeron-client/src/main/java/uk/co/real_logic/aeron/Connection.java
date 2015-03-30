@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Real Logic Ltd.
+ * Copyright 2014 - 2015 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -54,7 +54,7 @@ class Connection
         this.dataHandler = dataHandler;
         this.subscriberPosition = subscriberPosition;
         this.logBuffers = logBuffers;
-        this.positionBitsToShift = Integer.numberOfTrailingZeros(logReaders[0].capacity());
+        this.positionBitsToShift = Integer.numberOfTrailingZeros(logReaders[0].termBuffer().capacity());
         this.initialTermId = initialTermId;
 
         final int currentTermId = computeTermIdFromPosition(initialPosition, positionBitsToShift, initialTermId);

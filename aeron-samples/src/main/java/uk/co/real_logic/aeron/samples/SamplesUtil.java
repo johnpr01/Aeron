@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Real Logic Ltd.
+ * Copyright 2014 - 2015 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,11 +16,12 @@
 package uk.co.real_logic.aeron.samples;
 
 import uk.co.real_logic.aeron.Subscription;
-import uk.co.real_logic.aeron.common.BackoffIdleStrategy;
-import uk.co.real_logic.aeron.common.IdleStrategy;
+import uk.co.real_logic.agrona.concurrent.BackoffIdleStrategy;
+import uk.co.real_logic.agrona.concurrent.IdleStrategy;
 import uk.co.real_logic.aeron.common.RateReporter;
 import uk.co.real_logic.aeron.common.concurrent.logbuffer.DataHandler;
 import uk.co.real_logic.aeron.common.protocol.HeaderFlyweight;
+import uk.co.real_logic.agrona.LangUtil;
 
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -56,8 +57,8 @@ public class SamplesUtil
     /**
      * Return a reusable, parameterised event loop that calls a default idler when no messages are received
      *
-     * @param limit        passed to {@link Subscription#poll(int)}
-     * @param running      indication for loop
+     * @param limit   passed to {@link Subscription#poll(int)}
+     * @param running indication for loop
      * @return loop function
      */
     public static Consumer<Subscription> subscriberLoop(final int limit, final AtomicBoolean running)
@@ -92,7 +93,7 @@ public class SamplesUtil
                 }
                 catch (final Exception ex)
                 {
-                    ex.printStackTrace();
+                    LangUtil.rethrowUnchecked(ex);
                 }
             };
     }

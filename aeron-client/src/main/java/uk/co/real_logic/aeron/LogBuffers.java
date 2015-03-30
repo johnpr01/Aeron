@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Real Logic Ltd.
+ * Copyright 2014 - 2015 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,7 +31,7 @@ import static uk.co.real_logic.aeron.common.concurrent.logbuffer.LogBufferDescri
  *
  * @see uk.co.real_logic.aeron.common.concurrent.logbuffer.LogBufferDescriptor
  */
-class LogBuffers implements AutoCloseable
+public class LogBuffers implements AutoCloseable
 {
     private final MappedByteBuffer[] mappedByteBuffers;
     private final UnsafeBuffer[] atomicBuffers = new UnsafeBuffer[(PARTITION_COUNT * 2) + 1];
@@ -88,7 +88,6 @@ class LogBuffers implements AutoCloseable
         {
             throw new RuntimeException(ex);
         }
-
     }
 
     public UnsafeBuffer[] atomicBuffers()

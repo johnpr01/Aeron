@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Real Logic Ltd.
+ * Copyright 2014 - 2015 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -56,15 +56,6 @@ public class LogBufferPartition
         return metaDataBuffer;
     }
 
-    /**
-     * The capacity of the underlying log buffer.
-     *
-     * @return the capacity of the underlying log buffer.
-     */
-    public int capacity()
-    {
-        return termBuffer.capacity();
-    }
 
     /**
      * Clean down the buffers for reuse by zeroing them out.
@@ -103,7 +94,7 @@ public class LogBufferPartition
      */
     public int tailVolatile()
     {
-        return Math.min(metaDataBuffer.getIntVolatile(TERM_TAIL_COUNTER_OFFSET), capacity());
+        return Math.min(metaDataBuffer.getIntVolatile(TERM_TAIL_COUNTER_OFFSET), termBuffer.capacity());
     }
 
     /**
@@ -113,6 +104,6 @@ public class LogBufferPartition
      */
     public int tail()
     {
-        return Math.min(metaDataBuffer.getInt(TERM_TAIL_COUNTER_OFFSET), capacity());
+        return Math.min(metaDataBuffer.getInt(TERM_TAIL_COUNTER_OFFSET), termBuffer.capacity());
     }
 }

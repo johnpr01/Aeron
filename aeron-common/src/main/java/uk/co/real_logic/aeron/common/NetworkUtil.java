@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Real Logic Ltd.
+ * Copyright 2014 - 2015 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -46,7 +46,7 @@ public class NetworkUtil
      * @param subnetPrefix
      * @return {@link NetworkInterface}s that match the supplied criteria, ordered by the length
      * of the subnet prefix.  Empty if none match.
-     * @throws SocketException
+     * @throws SocketException Exception.
      */
     public static Collection<NetworkInterface> filterBySubnet(InetAddress address, int subnetPrefix)
         throws SocketException

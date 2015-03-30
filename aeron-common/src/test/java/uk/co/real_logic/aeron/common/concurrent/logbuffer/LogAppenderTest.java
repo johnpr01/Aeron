@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Real Logic Ltd.
+ * Copyright 2014 - 2015 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -55,7 +55,7 @@ public class LogAppenderTest
     @Test
     public void shouldReportCapacity()
     {
-        assertThat(logAppender.capacity(), is(TERM_BUFFER_CAPACITY));
+        assertThat(logAppender.termBuffer().capacity(), is(TERM_BUFFER_CAPACITY));
     }
 
     @Test
@@ -241,7 +241,7 @@ public class LogAppenderTest
         final int msgLength = 120;
         final int headerLength = DEFAULT_HEADER.capacity();
         final int requiredFrameSize = align(headerLength + msgLength, FRAME_ALIGNMENT);
-        final int tailValue = logAppender.capacity() - align(msgLength, FRAME_ALIGNMENT);
+        final int tailValue = logAppender.termBuffer().capacity() - align(msgLength, FRAME_ALIGNMENT);
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[128]);
 
         when(metaDataBuffer.getAndAddInt(TERM_TAIL_COUNTER_OFFSET, requiredFrameSize))
@@ -264,7 +264,7 @@ public class LogAppenderTest
         final int headerLength = DEFAULT_HEADER.capacity();
         final int msgLength = 120;
         final int requiredFrameSize = align(headerLength + msgLength, FRAME_ALIGNMENT);
-        final int tailValue = logAppender.capacity() - (requiredFrameSize + (headerLength - FRAME_ALIGNMENT));
+        final int tailValue = logAppender.termBuffer().capacity() - (requiredFrameSize + (headerLength - FRAME_ALIGNMENT));
         final UnsafeBuffer buffer = new UnsafeBuffer(new byte[128]);
 
         when(metaDataBuffer.getAndAddInt(TERM_TAIL_COUNTER_OFFSET, requiredFrameSize))

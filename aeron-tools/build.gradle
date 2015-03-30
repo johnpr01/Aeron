@@ -13,15 +13,4 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package uk.co.real_logic.aeron.common;
 
-/**
- * Low-latency idle strategy to be employed in loops that do significant work on each iteration such that any work in the
- * idle strategy would be wasteful.
- */
-public class NoOpIdleStrategy implements IdleStrategy
-{
-    public void idle(final int workCount)
-    {
-    }
-}

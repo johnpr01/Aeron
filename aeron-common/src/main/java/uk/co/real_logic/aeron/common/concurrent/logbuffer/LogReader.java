@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Real Logic Ltd.
+ * Copyright 2014 - 2015 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -59,7 +59,7 @@ public class LogReader extends LogBufferPartition
      */
     public void seek(final int offset)
     {
-        final int capacity = capacity();
+        final int capacity = termBuffer().capacity();
         if (offset < 0 || offset > capacity)
         {
             throw new IndexOutOfBoundsException(String.format("Invalid offset %d: range is 0 - %d", offset, capacity));
@@ -120,6 +120,6 @@ public class LogReader extends LogBufferPartition
      */
     public boolean isComplete()
     {
-        return offset >= capacity();
+        return offset >= termBuffer().capacity();
     }
 }

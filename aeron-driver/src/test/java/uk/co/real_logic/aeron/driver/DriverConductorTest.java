@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Real Logic Ltd.
+ * Copyright 2014 - 2015 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.stubbing.Answer;
 import org.mockito.verification.VerificationMode;
-import uk.co.real_logic.aeron.common.TimerWheel;
+import uk.co.real_logic.agrona.TimerWheel;
 import uk.co.real_logic.aeron.common.command.*;
 import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
 import uk.co.real_logic.agrona.concurrent.AtomicCounter;
@@ -469,7 +469,6 @@ public class DriverConductorTest
         final DriverPublication publication = captor.getValue();
         assertThat(publication.sessionId(), is(1));
         assertThat(publication.streamId(), is(2));
-        assertThat(publication.id(), is(CORRELATION_ID_1));
     }
 
     private void writeSubscriptionMessage(

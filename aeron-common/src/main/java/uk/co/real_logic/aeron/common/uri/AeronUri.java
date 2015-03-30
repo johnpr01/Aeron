@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Real Logic Ltd.
+ * Copyright 2014 - 2015 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -32,7 +32,7 @@ import java.util.Map;
  * value     = *( "[^|]" )
  * </pre>
  *
- * <li>Multiple params with the same key are allowed, the last value specified 'wins'.</li>
+ * Multiple params with the same key are allowed, the last value specified 'wins'.
  */
 public class AeronUri
 {

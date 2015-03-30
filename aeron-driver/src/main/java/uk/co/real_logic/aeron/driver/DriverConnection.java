@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Real Logic Ltd.
+ * Copyright 2014 - 2015 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -47,29 +47,28 @@ public class DriverConnection implements AutoCloseable
     private final int positionBitsToShift;
     private final int termLengthMask;
     private final int initialTermId;
+    private final int currentWindowLength;
+    private final int currentGain;
 
-    private final LogRebuilder[] rebuilders;
+    private final RawLog rawLog;
     private final ReceiveChannelEndpoint channelEndpoint;
-    private final AtomicLong timeOfLastFrame = new AtomicLong();
+    private final EventLogger logger;
+    private final SystemCounters systemCounters;
     private final NanoClock clock;
+    private final LogRebuilder[] rebuilders;
+    private final AtomicLong timeOfLastFrame = new AtomicLong();
     private final PositionReporter completedPosition;
     private final PositionReporter hwmPosition;
-    private final SystemCounters systemCounters;
     private final InetSocketAddress sourceAddress;
     private final List<PositionIndicator> subscriberPositions;
+    private final AtomicLong subscribersPosition = new AtomicLong();
     private final LossHandler lossHandler;
     private final StatusMessageSender statusMessageSender;
-    private final AtomicLong subscribersPosition = new AtomicLong();
-    private final RawLog rawLog;
-    private final EventLogger logger;
 
     private Status status = Status.ACTIVE;
-    private long lastSmPosition;
     private long timeOfLastStatusChange;
+    private long lastSmPosition;
     private long lastSmTimestamp;
-    private int lastSmTermId;
-    private int currentWindowLength;
-    private int currentGain;
 
     private volatile boolean statusMessagesEnabled = false;
     private volatile boolean scanForGapsEnabled = true;
@@ -80,6 +79,7 @@ public class DriverConnection implements AutoCloseable
         final int sessionId,
         final int streamId,
         final int initialTermId,
+        final int activeTermId,
         final int initialTermOffset,
         final int initialWindowLength,
         final long statusMessageTimeout,
@@ -118,10 +118,9 @@ public class DriverConnection implements AutoCloseable
         this.lossHandler = lossHandler;
         this.statusMessageSender = statusMessageSender;
         this.statusMessageTimeout = statusMessageTimeout;
-        this.lastSmTermId = initialTermId;
         this.lastSmTimestamp = 0;
 
-        final int termCapacity = rebuilders[0].capacity();
+        final int termCapacity = rebuilders[0].termBuffer().capacity();
 
         this.currentWindowLength = Math.min(termCapacity, initialWindowLength);
         this.currentGain = Math.min(currentWindowLength / 4, termCapacity / 4);
@@ -130,7 +129,7 @@ public class DriverConnection implements AutoCloseable
         this.positionBitsToShift = Integer.numberOfTrailingZeros(termCapacity);
         this.initialTermId = initialTermId;
 
-        final long initialPosition = computePosition(initialTermId, initialTermOffset, positionBitsToShift, initialTermId);
+        final long initialPosition = computePosition(activeTermId, initialTermOffset, positionBitsToShift, initialTermId);
         this.lastSmPosition = initialPosition;
         this.completedPosition.position(initialPosition);
         this.hwmPosition.position(initialPosition);
@@ -399,24 +398,21 @@ public class DriverConnection implements AutoCloseable
      */
     public int sendPendingStatusMessages(final long now)
     {
-        int workCount = 0;
+        int workCount = 1;
         if (statusMessagesEnabled)
         {
             final long position = subscribersPosition.get();
-            final int currentSmTermId = computeTermIdFromPosition(position, positionBitsToShift, initialTermId);
-            final int currentSmTail = (int)position & termLengthMask;
+            final int termOffset = (int)position & termLengthMask;
+            final int activeTermId = computeTermIdFromPosition(position, positionBitsToShift, initialTermId);
+            final int lastSmTermId = computeTermIdFromPosition(lastSmPosition, positionBitsToShift, initialTermId);
 
-            if (0 == lastSmTimestamp || currentSmTermId != lastSmTermId ||
+            if (0 == lastSmTimestamp || activeTermId != lastSmTermId ||
                 (position - lastSmPosition) > currentGain || now > (lastSmTimestamp + statusMessageTimeout))
             {
-                sendStatusMessage(currentSmTermId, currentSmTail, position, currentWindowLength, now);
+                sendStatusMessage(activeTermId, termOffset, position, currentWindowLength, now);
 
                 // invert the work count logic. We want to appear to be less busy once we send an SM
                 workCount = 0;
-            }
-            else
-            {
-                workCount = 1;
             }
         }
 
@@ -528,7 +524,6 @@ public class DriverConnection implements AutoCloseable
     {
         statusMessageSender.send(termId, termOffset, windowLength);
 
-        lastSmTermId = termId;
         lastSmTimestamp = now;
         lastSmPosition = position;
         systemCounters.statusMessagesSent().orderedIncrement();
@@ -540,6 +535,7 @@ public class DriverConnection implements AutoCloseable
 
         if (isHeartbeat)
         {
+            systemCounters.heartbeatsReceived().orderedIncrement();
             timeOfLastFrame.lazySet(clock.time());
         }
 

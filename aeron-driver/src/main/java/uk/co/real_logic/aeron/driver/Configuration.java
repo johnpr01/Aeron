@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Real Logic Ltd.
+ * Copyright 2014 - 2015 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,10 +15,11 @@
  */
 package uk.co.real_logic.aeron.driver;
 
-import uk.co.real_logic.aeron.common.BackoffIdleStrategy;
+import uk.co.real_logic.agrona.concurrent.BackoffIdleStrategy;
 import uk.co.real_logic.agrona.BitUtil;
-import uk.co.real_logic.aeron.common.IdleStrategy;
-import uk.co.real_logic.aeron.common.TimerWheel;
+import uk.co.real_logic.agrona.concurrent.IdleStrategy;
+import uk.co.real_logic.agrona.TimerWheel;
+import uk.co.real_logic.agrona.LangUtil;
 import uk.co.real_logic.agrona.concurrent.broadcast.BroadcastBufferDescriptor;
 import uk.co.real_logic.agrona.concurrent.ringbuffer.RingBufferDescriptor;
 
@@ -279,7 +280,7 @@ public class Configuration
      */
     public static final String AGENT_IDLE_STRATEGY_PROP_NAME = "aeron.agent.idle.strategy";
     public static final String AGENT_IDLE_STRATEGY = getProperty(
-        AGENT_IDLE_STRATEGY_PROP_NAME, "uk.co.real_logic.aeron.common.BackoffIdleStrategy");
+        AGENT_IDLE_STRATEGY_PROP_NAME, "uk.co.real_logic.agrona.concurrent.BackoffIdleStrategy");
 
     public static final long AGENT_IDLE_MAX_SPINS = 20;
     public static final long AGENT_IDLE_MAX_YIELDS = 50;
@@ -377,46 +378,57 @@ public class Configuration
 
     public static IdleStrategy agentIdleStrategy()
     {
+        IdleStrategy idleStrategy = null;
         switch (AGENT_IDLE_STRATEGY)
         {
-            case "uk.co.real_logic.aeron.common.BackoffIdleStrategy":
-                return new BackoffIdleStrategy(
+            case "uk.co.real_logic.agrona.concurrent.BackoffIdleStrategy":
+                idleStrategy = new BackoffIdleStrategy(
                     AGENT_IDLE_MAX_SPINS, AGENT_IDLE_MAX_YIELDS, AGENT_IDLE_MIN_PARK_NS, AGENT_IDLE_MAX_PARK_NS);
+                break;
 
             default:
                 try
                 {
-                    return (IdleStrategy)Class.forName(AGENT_IDLE_STRATEGY).newInstance();
+                    idleStrategy = (IdleStrategy)Class.forName(AGENT_IDLE_STRATEGY).newInstance();
                 }
                 catch (final Exception ex)
                 {
-                    throw new RuntimeException(ex);
+                    LangUtil.rethrowUnchecked(ex);
                 }
+                break;
         }
+
+        return idleStrategy;
     }
 
     public static SenderFlowControl unicastSenderFlowControlStrategy()
     {
+        SenderFlowControl senderFlowControl = null;
         try
         {
-            return (SenderFlowControl)Class.forName(SENDER_UNICAST_FLOW_CONTROL_STRATEGY).newInstance();
+             senderFlowControl= (SenderFlowControl)Class.forName(SENDER_UNICAST_FLOW_CONTROL_STRATEGY).newInstance();
         }
         catch (final Exception ex)
         {
-            throw new RuntimeException(ex);
+            LangUtil.rethrowUnchecked(ex);
         }
+
+        return senderFlowControl;
     }
 
     public static SenderFlowControl multicastSenderFlowControlStrategy()
     {
+        SenderFlowControl senderFlowControl = null;
         try
         {
-            return (SenderFlowControl)Class.forName(SENDER_MULTICAST_FLOW_CONTROL_STRATEGY).newInstance();
+            senderFlowControl = (SenderFlowControl)Class.forName(SENDER_MULTICAST_FLOW_CONTROL_STRATEGY).newInstance();
         }
         catch (final Exception ex)
         {
-            throw new RuntimeException(ex);
+            LangUtil.rethrowUnchecked(ex);
         }
+
+        return senderFlowControl;
     }
 
     public static TimerWheel newConductorTimerWheel()

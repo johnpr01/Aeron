@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Real Logic Ltd.
+ * Copyright 2014 - 2015 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,6 +31,7 @@ public class SystemCounters implements AutoCloseable
     private final AtomicCounter statusMessagesSent;
     private final AtomicCounter statusMessagesReceived;
     private final AtomicCounter heartbeatsSent;
+    private final AtomicCounter heartbeatsReceived;
     private final AtomicCounter flowControlUnderRuns;
     private final AtomicCounter flowControlOverRuns;
     private final AtomicCounter invalidPackets;
@@ -40,6 +41,7 @@ public class SystemCounters implements AutoCloseable
     private final AtomicCounter nakFrameShortSends;
     private final AtomicCounter smFrameShortSends;
     private final AtomicCounter clientKeepAlives;
+    private final AtomicCounter senderFlowControlLimits;
 
     public SystemCounters(final CountersManager countersManager)
     {
@@ -53,6 +55,7 @@ public class SystemCounters implements AutoCloseable
         statusMessagesSent = countersManager.newCounter("SMs sent");
         statusMessagesReceived = countersManager.newCounter("SMs received");
         heartbeatsSent = countersManager.newCounter("Heartbeats sent");
+        heartbeatsReceived = countersManager.newCounter("Heartbeats received");
         retransmitsSent = countersManager.newCounter("Retransmits sent");
         flowControlUnderRuns = countersManager.newCounter("Flow control under runs");
         flowControlOverRuns = countersManager.newCounter("Flow control over runs");
@@ -62,7 +65,8 @@ public class SystemCounters implements AutoCloseable
         setupFrameShortSends = countersManager.newCounter("Setup Frame short sends");
         nakFrameShortSends = countersManager.newCounter("NAK Frame short sends");
         smFrameShortSends = countersManager.newCounter("SM Frame short sends");
-        clientKeepAlives = countersManager.newCounter("Client Keep Alives");
+        clientKeepAlives = countersManager.newCounter("Client keep-alives");
+        senderFlowControlLimits = countersManager.newCounter("Sender flow control limits applied");
     }
 
     public void close()
@@ -77,6 +81,7 @@ public class SystemCounters implements AutoCloseable
         statusMessagesSent.close();
         statusMessagesReceived.close();
         heartbeatsSent.close();
+        heartbeatsReceived.close();
         retransmitsSent.close();
         flowControlUnderRuns.close();
         flowControlOverRuns.close();
@@ -87,6 +92,7 @@ public class SystemCounters implements AutoCloseable
         nakFrameShortSends.close();
         smFrameShortSends.close();
         clientKeepAlives.close();
+        senderFlowControlLimits.close();
     }
 
     public AtomicCounter bytesSent()
@@ -144,6 +150,11 @@ public class SystemCounters implements AutoCloseable
         return heartbeatsSent;
     }
 
+    public AtomicCounter heartbeatsReceived()
+    {
+        return heartbeatsReceived;
+    }
+
     public AtomicCounter flowControlUnderRuns()
     {
         return flowControlUnderRuns;
@@ -187,5 +198,10 @@ public class SystemCounters implements AutoCloseable
     public AtomicCounter clientKeepAlives()
     {
         return clientKeepAlives;
+    }
+
+    public AtomicCounter senderFlowControlLimits()
+    {
+        return senderFlowControlLimits;
     }
 }

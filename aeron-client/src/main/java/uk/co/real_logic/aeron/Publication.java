@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Real Logic Ltd.
+ * Copyright 2014 - 2015 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -68,7 +68,7 @@ public class Publication implements AutoCloseable
         this.limit = limit;
 
         activeTermId(logMetaDataBuffer, initialTermId(logMetaDataBuffer));
-        this.positionBitsToShift = Integer.numberOfTrailingZeros(logAppenders[0].capacity());
+        this.positionBitsToShift = Integer.numberOfTrailingZeros(logAppenders[0].termBuffer().capacity());
     }
 
     /**
@@ -99,6 +99,16 @@ public class Publication implements AutoCloseable
     public int sessionId()
     {
         return sessionId;
+    }
+
+    /**
+     * Maximum message length supported in bytes.
+     *
+     * @return maximum message length supported in bytes.
+     */
+    public int maxMessageLength()
+    {
+        return logAppenders[0].maxMessageLength();
     }
 
     public void close()

@@ -1,5 +1,5 @@
 /*
- * Copyright 2014 Real Logic Ltd.
+ * Copyright 2014 - 2015 Real Logic Ltd.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -148,7 +148,7 @@ class MappedRawLog implements RawLog
             final MappedByteBuffer buffer = mappedBuffers[0];
             for (int i = 0; i < PARTITION_COUNT; i++)
             {
-                buffer.limit((termLength * i) + (termLength - 1))
+                buffer.limit((termLength * i) + termLength)
                       .position(termLength * i);
 
                 terms[i] = buffer.slice();
