@@ -16,19 +16,15 @@
 package uk.co.real_logic.aeron.samples;
 
 import uk.co.real_logic.aeron.Subscription;
-import uk.co.real_logic.agrona.concurrent.BackoffIdleStrategy;
-import uk.co.real_logic.agrona.concurrent.IdleStrategy;
-import uk.co.real_logic.aeron.common.RateReporter;
-import uk.co.real_logic.aeron.common.concurrent.logbuffer.DataHandler;
-import uk.co.real_logic.aeron.common.protocol.HeaderFlyweight;
+import uk.co.real_logic.aeron.driver.RateReporter;
+import uk.co.real_logic.aeron.logbuffer.FragmentHandler;
+import uk.co.real_logic.aeron.protocol.HeaderFlyweight;
 import uk.co.real_logic.agrona.LangUtil;
+import uk.co.real_logic.agrona.concurrent.BusySpinIdleStrategy;
+import uk.co.real_logic.agrona.concurrent.IdleStrategy;
 
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
-
-import static uk.co.real_logic.aeron.common.CommonContext.ADMIN_DIR_PROP_NAME;
-import static uk.co.real_logic.aeron.common.CommonContext.DATA_DIR_PROP_NAME;
 
 /**
  * Utility functions for samples
@@ -36,49 +32,32 @@ import static uk.co.real_logic.aeron.common.CommonContext.DATA_DIR_PROP_NAME;
 public class SamplesUtil
 {
     /**
-     * Use shared memory on Linux to avoid contention on the page cache.
-     */
-    public static void useSharedMemoryOnLinux()
-    {
-        if ("Linux".equalsIgnoreCase(System.getProperty("os.name")))
-        {
-            if (null == System.getProperty(ADMIN_DIR_PROP_NAME))
-            {
-                System.setProperty(ADMIN_DIR_PROP_NAME, "/dev/shm/aeron/conductor");
-            }
-
-            if (null == System.getProperty(DATA_DIR_PROP_NAME))
-            {
-                System.setProperty(DATA_DIR_PROP_NAME, "/dev/shm/aeron/data");
-            }
-        }
-    }
-
-    /**
      * Return a reusable, parameterised event loop that calls a default idler when no messages are received
      *
-     * @param limit   passed to {@link Subscription#poll(int)}
-     * @param running indication for loop
+     * @param fragmentHandler to be called back for each message.
+     * @param limit           passed to {@link Subscription#poll(FragmentHandler, int)}
+     * @param running         indication for loop
      * @return loop function
      */
-    public static Consumer<Subscription> subscriberLoop(final int limit, final AtomicBoolean running)
+    public static Consumer<Subscription> subscriberLoop(
+        final FragmentHandler fragmentHandler, final int limit, final AtomicBoolean running)
     {
-        final IdleStrategy idleStrategy = new BackoffIdleStrategy(
-            100, 10, TimeUnit.MICROSECONDS.toNanos(1), TimeUnit.MICROSECONDS.toNanos(100));
+        final IdleStrategy idleStrategy = new BusySpinIdleStrategy();
 
-        return subscriberLoop(limit, running, idleStrategy);
+        return subscriberLoop(fragmentHandler, limit, running, idleStrategy);
     }
 
     /**
      * Return a reusable, parameterized event loop that calls and idler when no messages are received
      *
-     * @param limit        passed to {@link Subscription#poll(int)}
-     * @param running      indication for loop
-     * @param idleStrategy to use for loop
+     * @param fragmentHandler to be called back for each message.
+     * @param limit           passed to {@link Subscription#poll(FragmentHandler, int)}
+     * @param running         indication for loop
+     * @param idleStrategy    to use for loop
      * @return loop function
      */
     public static Consumer<Subscription> subscriberLoop(
-        final int limit, final AtomicBoolean running, final IdleStrategy idleStrategy)
+        final FragmentHandler fragmentHandler, final int limit, final AtomicBoolean running, final IdleStrategy idleStrategy)
     {
         return
             (subscription) ->
@@ -87,7 +66,7 @@ public class SamplesUtil
                 {
                     while (running.get())
                     {
-                        final int fragmentsRead = subscription.poll(limit);
+                        final int fragmentsRead = subscription.poll(fragmentHandler, limit);
                         idleStrategy.idle(fragmentsRead);
                     }
                 }
@@ -99,33 +78,32 @@ public class SamplesUtil
     }
 
     /**
-     * Return a reusable, parameterized {@link DataHandler} that prints to stdout
+     * Return a reusable, parameterized {@link FragmentHandler} that prints to stdout
      *
      * @param streamId to show when printing
      * @return subscription data handler function that prints the message contents
      */
-    public static DataHandler printStringMessage(final int streamId)
+    public static FragmentHandler printStringMessage(final int streamId)
     {
         return (buffer, offset, length, header) ->
         {
             final byte[] data = new byte[length];
             buffer.getBytes(offset, data);
 
-            System.out.println(
-                String.format(
-                    "message to stream %d from session %x (%d@%d) <<%s>>",
-                    streamId, header.sessionId(), length, offset, new String(data)));
+            System.out.println(String.format(
+                "Message to stream %d from session %d (%d@%d) <<%s>>",
+                streamId, header.sessionId(), length, offset, new String(data)));
         };
     }
 
     /**
-     * Return a reusable, parameteried {@link DataHandler} that calls into a
+     * Return a reusable, parameteried {@link FragmentHandler} that calls into a
      * {@link RateReporter}.
      *
      * @param reporter for the rate
-     * @return {@link DataHandler} that records the rate information
+     * @return {@link FragmentHandler} that records the rate information
      */
-    public static DataHandler rateReporterHandler(final RateReporter reporter)
+    public static FragmentHandler rateReporterHandler(final RateReporter reporter)
     {
         return (buffer, offset, length, header) -> reporter.onMessage(1, length);
     }
@@ -163,27 +141,26 @@ public class SamplesUtil
         final long totalMessages,
         final long totalBytes)
     {
-        System.out.println(
-            String.format(
-                "%.02g msgs/sec, %.02g bytes/sec, totals %d messages %d MB",
-                messagesPerSec, bytesPerSec, totalMessages, totalBytes / (1024 * 1024)));
+        System.out.println(String.format(
+            "%.02g msgs/sec, %.02g bytes/sec, totals %d messages %d MB",
+            messagesPerSec, bytesPerSec, totalMessages, totalBytes / (1024 * 1024)));
     }
 
     /**
      * Print the information for a new connection to stdout.
      *
-     * @param channel           for the connection
-     * @param streamId          for the stream
-     * @param sessionId         for the connection publication
-     * @param sourceInformation that is transport specific
+     * @param channel         for the connection
+     * @param streamId        for the stream
+     * @param sessionId       for the connection publication
+     * @param joiningPosition for the subscriber in the stream
+     * @param sourceIdentity  that is transport specific
      */
     public static void printNewConnection(
-        final String channel, final int streamId, final int sessionId, final String sourceInformation)
+        final String channel, final int streamId, final int sessionId, final long joiningPosition, final String sourceIdentity)
     {
-        System.out.println(
-            String.format(
-                "new connection on %s streamId %d sessionId %x from %s",
-                channel, streamId, sessionId, sourceInformation));
+        System.out.println(String.format(
+            "New connection on %s streamId=%d sessionId=%d at position=%d from %s",
+            channel, streamId, sessionId, joiningPosition, sourceIdentity));
     }
 
     /**
@@ -192,12 +169,12 @@ public class SamplesUtil
      * @param channel   for the connection
      * @param streamId  for the stream
      * @param sessionId for the connection publication
+     * @param position  at which the connection when inactive
      */
-    public static void printInactiveConnection(final String channel, final int streamId, final int sessionId)
+    public static void printInactiveConnection(final String channel, final int streamId, final int sessionId, final long position)
     {
-        System.out.println(
-            String.format(
-                "inactive connection on %s streamId %d sessionId %x",
-                channel, streamId, sessionId));
+        System.out.println(String.format(
+            "Inactive connection on %s streamId=%d sessionId=%d at position=%d",
+            channel, streamId, sessionId, position));
     }
 }

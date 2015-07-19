@@ -15,13 +15,13 @@
  */
 package uk.co.real_logic.aeron.samples;
 
-import uk.co.real_logic.aeron.common.CncFileDescriptor;
-import uk.co.real_logic.aeron.common.CommonContext;
-import uk.co.real_logic.aeron.common.concurrent.SigInt;
+import uk.co.real_logic.aeron.CncFileDescriptor;
+import uk.co.real_logic.aeron.CommonContext;
 import uk.co.real_logic.agrona.DirectBuffer;
 import uk.co.real_logic.agrona.IoUtil;
 import uk.co.real_logic.agrona.concurrent.AtomicBuffer;
 import uk.co.real_logic.agrona.concurrent.CountersManager;
+import uk.co.real_logic.agrona.concurrent.SigInt;
 
 import java.io.File;
 import java.nio.MappedByteBuffer;
@@ -29,33 +29,32 @@ import java.util.Date;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * App to print out status counters and labels
+ * Application to print out counters and their labels
+ * A command-and-control (cnc) file is maintained by media driver in shared memory.
+ * This application reads the the cnc file and prints the counters.
+ * Layout of the cnc file is described in {@link CncFileDescriptor}.
  */
 public class AeronStat
 {
     public static void main(final String[] args) throws Exception
     {
-        SamplesUtil.useSharedMemoryOnLinux();
-
         final File cncFile = CommonContext.newDefaultCncFile();
-
         System.out.println("Command `n Control file " + cncFile);
 
         final MappedByteBuffer cncByteBuffer = IoUtil.mapExistingFile(cncFile, "cnc");
-
         final DirectBuffer metaDataBuffer = CncFileDescriptor.createMetaDataBuffer(cncByteBuffer);
-
         final int cncVersion = metaDataBuffer.getInt(CncFileDescriptor.cncVersionOffset(0));
+
         if (CncFileDescriptor.CNC_VERSION != cncVersion)
         {
-            throw new IllegalStateException("CNC version not understood: version=" + cncVersion);
+            throw new IllegalStateException("CNC version not supported: version=" + cncVersion);
         }
 
         final AtomicBuffer labelsBuffer = CncFileDescriptor.createCounterLabelsBuffer(cncByteBuffer, metaDataBuffer);
         final AtomicBuffer valuesBuffer = CncFileDescriptor.createCounterValuesBuffer(cncByteBuffer, metaDataBuffer);
-
         final CountersManager countersManager = new CountersManager(labelsBuffer, valuesBuffer);
 
+        // Setup the SIGINT handler for graceful shutdown
         final AtomicBoolean running = new AtomicBoolean(true);
         SigInt.register(() -> running.set(false));
 

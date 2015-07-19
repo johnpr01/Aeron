@@ -15,25 +15,32 @@
  */
 package uk.co.real_logic.aeron.samples;
 
-import uk.co.real_logic.aeron.*;
-import uk.co.real_logic.aeron.common.*;
-import uk.co.real_logic.aeron.common.concurrent.console.ContinueBarrier;
-import uk.co.real_logic.aeron.common.concurrent.logbuffer.DataHandler;
+import uk.co.real_logic.aeron.Aeron;
+import uk.co.real_logic.aeron.Publication;
+import uk.co.real_logic.aeron.Subscription;
+import uk.co.real_logic.aeron.CommonContext;
+import uk.co.real_logic.aeron.driver.RateReporter;
+import uk.co.real_logic.aeron.logbuffer.FragmentHandler;
 import uk.co.real_logic.aeron.driver.MediaDriver;
+import uk.co.real_logic.aeron.driver.ThreadingMode;
 import uk.co.real_logic.agrona.concurrent.BusySpinIdleStrategy;
 import uk.co.real_logic.agrona.concurrent.IdleStrategy;
+import uk.co.real_logic.agrona.concurrent.NoOpIdleStrategy;
 import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
+import uk.co.real_logic.agrona.console.ContinueBarrier;
 
 import java.nio.ByteBuffer;
-import java.util.concurrent.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static uk.co.real_logic.aeron.samples.SamplesUtil.rateReporterHandler;
 
 public class EmbeddedThroughput
 {
-    private static final int STREAM_ID = SampleConfiguration.STREAM_ID;
     private static final String CHANNEL = SampleConfiguration.CHANNEL;
+    private static final int STREAM_ID = SampleConfiguration.STREAM_ID;
     private static final int MESSAGE_LENGTH = SampleConfiguration.MESSAGE_LENGTH;
     private static final long NUMBER_OF_MESSAGES = SampleConfiguration.NUMBER_OF_MESSAGES;
     private static final long LINGER_TIMEOUT_MS = SampleConfiguration.LINGER_TIMEOUT_MS;
@@ -44,22 +51,34 @@ public class EmbeddedThroughput
 
     public static void main(final String[] args) throws Exception
     {
-        SamplesUtil.useSharedMemoryOnLinux();
+        final MediaDriver.Context ctx = new MediaDriver.Context()
+            .threadingMode(ThreadingMode.DEDICATED)
+            .conductorIdleStrategy(new NoOpIdleStrategy())
+            .receiverIdleStrategy(new NoOpIdleStrategy())
+            .senderIdleStrategy(new NoOpIdleStrategy())
+            .dirsDeleteOnExit(true);
 
         final RateReporter reporter = new RateReporter(TimeUnit.SECONDS.toNanos(1), SamplesUtil::printRate);
-        final DataHandler rateReporterHandler = rateReporterHandler(reporter);
-        final ExecutorService executor = Executors.newFixedThreadPool(3);
+        final FragmentHandler rateReporterHandler = rateReporterHandler(reporter);
+        final ExecutorService executor = Executors.newFixedThreadPool(2);
+
         final Aeron.Context context = new Aeron.Context();
+        final String embeddedDirName = CommonContext.generateEmbeddedDirName();
+        ctx.dirName(embeddedDirName);
+        context.dirName(embeddedDirName);
+
+        System.out.format("Aeron dir '%s'\n", embeddedDirName);
 
         final AtomicBoolean running = new AtomicBoolean(true);
 
-        try (final MediaDriver ignore = MediaDriver.launch();
-             final Aeron aeron = Aeron.connect(context, executor);
+        try (final MediaDriver ignore = MediaDriver.launch(ctx);
+             final Aeron aeron = Aeron.connect(context);
              final Publication publication = aeron.addPublication(CHANNEL, STREAM_ID);
-             final Subscription subscription = aeron.addSubscription(CHANNEL, STREAM_ID, rateReporterHandler))
+             final Subscription subscription = aeron.addSubscription(CHANNEL, STREAM_ID))
         {
             executor.execute(reporter);
-            executor.execute(() -> SamplesUtil.subscriberLoop(FRAGMENT_COUNT_LIMIT, running).accept(subscription));
+            executor.execute(
+                () -> SamplesUtil.subscriberLoop(rateReporterHandler, FRAGMENT_COUNT_LIMIT, running).accept(subscription));
 
             final ContinueBarrier barrier = new ContinueBarrier("Execute again?");
 
@@ -75,7 +94,7 @@ public class EmbeddedThroughput
                 {
                     ATOMIC_BUFFER.putLong(0, i);
 
-                    while (!publication.offer(ATOMIC_BUFFER, 0, ATOMIC_BUFFER.capacity()))
+                    while (publication.offer(ATOMIC_BUFFER, 0, ATOMIC_BUFFER.capacity()) < 0)
                     {
                         backPressureCount++;
                         OFFER_IDLE_STRATEGY.idle(0);

@@ -19,7 +19,7 @@
 
 #include <memory>
 #include <util/Exceptions.h>
-#include <common/AgentRunner.h>
+#include <concurrent/AgentRunner.h>
 #include <concurrent/ringbuffer/ManyToOneRingBuffer.h>
 #include <concurrent/broadcast/CopyBroadcastReceiver.h>
 #include <CncFileDescriptor.h>
@@ -27,14 +27,17 @@
 
 namespace aeron {
 
-using namespace aeron::common;
-using namespace aeron::common::common;
-using namespace aeron::common::concurrent::ringbuffer;
-using namespace aeron::common::concurrent::broadcast;
+using namespace aeron::concurrent::ringbuffer;
+using namespace aeron::concurrent::broadcast;
 
-typedef std::function<void(const std::string& channel, std::int32_t streamId, std::int32_t sessionId, const std::string& sourceInformation)> on_new_connection_t;
+typedef std::function<void(const std::string& channel, std::int32_t streamId, std::int32_t sessionId, std::int64_t joiningPosition, const std::string& sourceIdentity)> on_new_connection_t;
+typedef std::function<void(const std::string& channel, std::int32_t streamId, std::int32_t sessionId, std::int64_t position)> on_inactive_connection_t;
 typedef std::function<void(const std::string& channel, std::int32_t streamId, std::int32_t sessionId, std::int64_t correlationId)> on_new_publication_t;
 typedef std::function<void(const std::string& channel, std::int32_t streamId, std::int64_t correlationId)> on_new_subscription_t;
+
+const static long NULL_TIMEOUT = -1;
+const static long DEFAULT_MEDIA_DRIVER_TIMEOUT_MS = 10000;
+const static long DEFAULT_RESOURCE_LINGER_MS = 5000;
 
 inline static void defaultErrorHandler(util::SourcedException& exception)
 {
@@ -46,11 +49,15 @@ inline static void defaultOnNewPublicationHandler(const std::string&, std::int32
 {
 }
 
-inline static void defaultOnNewConnectionHandler(const std::string&, std::int32_t, std::int32_t, const std::string&)
+inline static void defaultOnNewConnectionHandler(const std::string&, std::int32_t, std::int32_t, std::int64_t, const std::string&)
 {
 }
 
 inline static void defaultOnNewSubscriptionHandler(const std::string&, std::int32_t, std::int64_t)
+{
+}
+
+inline static void defaultOnInactiveConnectionHandler(const std::string&, std::int32_t, std::int32_t, std::int64_t)
 {
 }
 
@@ -62,61 +69,23 @@ public:
 
     this_t& conclude()
     {
+        if (NULL_TIMEOUT == m_mediaDriverTimeout)
+        {
+            m_mediaDriverTimeout = DEFAULT_MEDIA_DRIVER_TIMEOUT_MS;
+        }
+
         return *this;
     }
 
     inline this_t& aeronDir(const std::string &base)
     {
-        m_dataDirName = base + "/data";
-        m_adminDirName = base + "/conductor";
+        m_dirName = base;
         return *this;
-    }
-
-    inline this_t& toDriverBuffer(std::unique_ptr<ManyToOneRingBuffer> toDriverBuffer)
-    {
-        m_toDriverBuffer = std::move(toDriverBuffer);
-        return *this;
-    }
-
-    inline std::unique_ptr<ManyToOneRingBuffer> toDriverBuffer()
-    {
-        return std::move(m_toDriverBuffer);
-    }
-
-    inline this_t& toClientsBuffer(std::unique_ptr<CopyBroadcastReceiver> toClientsBuffer)
-    {
-        m_toClientsBuffer = std::move(toClientsBuffer);
-        return *this;
-    }
-
-    inline std::unique_ptr<CopyBroadcastReceiver> toClientsBuffer()
-    {
-        return std::move(m_toClientsBuffer);
-    }
-
-    inline void dataDirName(const std::string& name)
-    {
-        m_dataDirName = name;
-    }
-
-    inline const std::string& dataDirName() const
-    {
-        return m_dataDirName;
-    }
-
-    inline void adminDirName(const std::string& name)
-    {
-        m_adminDirName = name;
-    }
-
-    inline const std::string& adminDirName() const
-    {
-        return m_adminDirName;
     }
 
     inline const std::string cncFileName()
     {
-        return m_adminDirName + "/" + CncFileDescriptor::CNC_FILE;
+        return m_dirName + "/" + CncFileDescriptor::CNC_FILE;
     }
 
     inline this_t& newPublicationHandler(const on_new_publication_t& handler)
@@ -137,9 +106,27 @@ public:
         return *this;
     }
 
+    inline this_t& inactiveConnectionHandler(const on_inactive_connection_t& handler)
+    {
+        m_onInactiveConnectionHandler = handler;
+        return *this;
+    }
+
+    inline this_t& mediaDriverTimeout(long value)
+    {
+        m_mediaDriverTimeout = value;
+        return *this;
+    }
+
+    inline this_t& resourceLingerTimeout(long value)
+    {
+        m_resourceLingerTimeout = value;
+        return *this;
+    }
+
     inline static std::string tmpDir()
     {
-#if defined(WIN32)
+#if defined(_MSC_VER)
         static char buff[MAX_PATH+1];
         std::string dir = "";
 
@@ -171,14 +158,14 @@ public:
     }
 
 private:
-    std::unique_ptr<ManyToOneRingBuffer> m_toDriverBuffer;
-    std::unique_ptr<CopyBroadcastReceiver> m_toClientsBuffer;
-    std::string m_dataDirName = defaultAeronPath() + "/data";
-    std::string m_adminDirName = defaultAeronPath() + "/conductor";
+    std::string m_dirName = defaultAeronPath();
     exception_handler_t m_exceptionHandler = defaultErrorHandler;
     on_new_publication_t m_onNewPublicationHandler = defaultOnNewPublicationHandler;
     on_new_subscription_t m_onNewSubscriptionHandler = defaultOnNewSubscriptionHandler;
     on_new_connection_t m_onNewConnectionHandler = defaultOnNewConnectionHandler;
+    on_inactive_connection_t m_onInactiveConnectionHandler = defaultOnInactiveConnectionHandler;
+    long m_mediaDriverTimeout = DEFAULT_MEDIA_DRIVER_TIMEOUT_MS;
+    long m_resourceLingerTimeout = DEFAULT_RESOURCE_LINGER_MS;
 };
 
 }

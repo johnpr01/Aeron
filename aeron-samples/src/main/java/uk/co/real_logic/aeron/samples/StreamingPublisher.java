@@ -17,13 +17,13 @@ package uk.co.real_logic.aeron.samples;
 
 import uk.co.real_logic.aeron.Aeron;
 import uk.co.real_logic.aeron.Publication;
-import uk.co.real_logic.aeron.common.RateReporter;
-import uk.co.real_logic.aeron.common.concurrent.console.ContinueBarrier;
+import uk.co.real_logic.aeron.driver.RateReporter;
 import uk.co.real_logic.aeron.driver.MediaDriver;
 import uk.co.real_logic.agrona.CloseHelper;
 import uk.co.real_logic.agrona.concurrent.BusySpinIdleStrategy;
 import uk.co.real_logic.agrona.concurrent.IdleStrategy;
 import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
+import uk.co.real_logic.agrona.console.ContinueBarrier;
 
 import java.nio.ByteBuffer;
 import java.util.concurrent.ExecutorService;
@@ -46,10 +46,8 @@ public class StreamingPublisher
     private static final long LINGER_TIMEOUT_MS = SampleConfiguration.LINGER_TIMEOUT_MS;
     private static final boolean EMBEDDED_MEDIA_DRIVER = SampleConfiguration.EMBEDDED_MEDIA_DRIVER;
     private static final boolean RANDOM_MESSAGE_LENGTH = SampleConfiguration.RANDOM_MESSAGE_LENGTH;
-
     private static final UnsafeBuffer ATOMIC_BUFFER = new UnsafeBuffer(ByteBuffer.allocateDirect(MESSAGE_LENGTH));
     private static final IdleStrategy OFFER_IDLE_STRATEGY = new BusySpinIdleStrategy();
-
     private static final IntSupplier LENGTH_GENERATOR = composeLengthGenerator(RANDOM_MESSAGE_LENGTH, MESSAGE_LENGTH);
 
     private static volatile boolean printingActive = true;
@@ -61,17 +59,23 @@ public class StreamingPublisher
             throw new IllegalArgumentException(String.format("Message length must be at least %d bytes", SIZE_OF_LONG));
         }
 
-        SamplesUtil.useSharedMemoryOnLinux();
-
-        final MediaDriver driver = EMBEDDED_MEDIA_DRIVER ? MediaDriver.launch() : null;
-
+        final MediaDriver driver = EMBEDDED_MEDIA_DRIVER ? MediaDriver.launchEmbedded() : null;
         final Aeron.Context context = new Aeron.Context();
+
+        if (EMBEDDED_MEDIA_DRIVER)
+        {
+            context.dirName(driver.contextDirName());
+        }
+
         final RateReporter reporter = new RateReporter(TimeUnit.SECONDS.toNanos(1), StreamingPublisher::printRate);
-        final ExecutorService executor = Executors.newFixedThreadPool(2);
+        final ExecutorService executor = Executors.newFixedThreadPool(1);
 
         executor.execute(reporter);
 
-        try (final Aeron aeron = Aeron.connect(context, executor);
+        // Connect to media driver and add publication to send messages on the configured channel and stream ID.
+        // The Aeron and Publication classes implement AutoCloseable, and will automatically
+        // clean up resources when this try block is finished.
+        try (final Aeron aeron = Aeron.connect(context);
              final Publication publication = aeron.addPublication(CHANNEL, STREAM_ID))
         {
             final ContinueBarrier barrier = new ContinueBarrier("Execute again?");
@@ -94,8 +98,11 @@ public class StreamingPublisher
 
                     ATOMIC_BUFFER.putLong(0, i);
 
-                    while (!publication.offer(ATOMIC_BUFFER, 0, length))
+                    while (publication.offer(ATOMIC_BUFFER, 0, length) < 0L)
                     {
+                        // The offer failed, which is usually due to the publication
+                        // being temporarily blocked.  Retry the offer after a short
+                        // spin/yield/sleep, depending on the chosen IdleStrategy.
                         OFFER_IDLE_STRATEGY.idle(0);
                     }
 
@@ -114,7 +121,6 @@ public class StreamingPublisher
             }
             while (barrier.await());
         }
-
         reporter.halt();
         executor.shutdown();
         CloseHelper.quietClose(driver);

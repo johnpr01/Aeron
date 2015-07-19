@@ -15,20 +15,29 @@
  */
 package uk.co.real_logic.aeron.driver.cmd;
 
-import uk.co.real_logic.aeron.driver.DriverPublication;
+import uk.co.real_logic.aeron.driver.FlowControl;
+import uk.co.real_logic.aeron.driver.NetworkPublication;
+import uk.co.real_logic.aeron.driver.RetransmitHandler;
 import uk.co.real_logic.aeron.driver.Sender;
 
 public class NewPublicationCmd implements SenderCmd
 {
-    private final DriverPublication publication;
+    private final NetworkPublication publication;
+    private final RetransmitHandler retransmitHandler;
+    private final FlowControl flowControl;
 
-    public NewPublicationCmd(final DriverPublication publication)
+    public NewPublicationCmd(
+        final NetworkPublication publication,
+        final RetransmitHandler retransmitHandler,
+        final FlowControl flowControl)
     {
         this.publication = publication;
+        this.retransmitHandler = retransmitHandler;
+        this.flowControl = flowControl;
     }
 
     public void execute(final Sender sender)
     {
-        sender.onNewPublication(publication);
+        sender.onNewPublication(publication, retransmitHandler, flowControl);
     }
 }

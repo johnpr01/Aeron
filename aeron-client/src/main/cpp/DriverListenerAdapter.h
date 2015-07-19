@@ -20,13 +20,14 @@
 #include <concurrent/broadcast/CopyBroadcastReceiver.h>
 #include <command/ControlProtocolEvents.h>
 #include <command/PublicationBuffersReadyFlyweight.h>
+#include <command/ConnectionBuffersReadyFlyweight.h>
+#include <command/ConnectionMessageFlyweight.h>
 
 namespace aeron {
 
-using namespace aeron::common;
-using namespace aeron::common::command;
-using namespace aeron::common::concurrent;
-using namespace aeron::common::concurrent::broadcast;
+using namespace aeron::command;
+using namespace aeron::concurrent;
+using namespace aeron::concurrent::broadcast;
 
 template <class DriverListener>
 class DriverListenerAdapter
@@ -50,29 +51,55 @@ public:
                         const PublicationBuffersReadyFlyweight publicationReady(buffer, offset);
 
                         m_driverListener.onNewPublication(
-                            publicationReady.channel(),
                             publicationReady.streamId(),
                             publicationReady.sessionId(),
-                            publicationReady.positionIndicatorOffset(),
-                            publicationReady.mtuLength(),
+                            publicationReady.positionLimitCounterId(),
                             publicationReady.logFileName(),
                             publicationReady.correlationId());
-                    };
+                    }
+                    break;
 
                     case ControlProtocolEvents::ON_CONNECTION_READY:
                     {
+                        const ConnectionBuffersReadyFlyweight connectionReady(buffer, offset);
 
-                    };
+                        m_driverListener.onNewConnection(
+                            connectionReady.streamId(),
+                            connectionReady.sessionId(),
+                            connectionReady.joiningPosition(),
+                            connectionReady.logFileName(),
+                            connectionReady.sourceIdentity(),
+                            connectionReady.subscriberPositionCount(),
+                            connectionReady.subscriberPositions(),
+                            connectionReady.correlationId());
+                    }
+                    break;
 
                     case ControlProtocolEvents::ON_OPERATION_SUCCESS:
                     {
+                        const CorrelatedMessageFlyweight correlatedMessage(buffer, offset);
 
-                    };
+                        m_driverListener.onOperationSuccess(correlatedMessage.correlationId());
+                    }
+                    break;
+
+                    case ControlProtocolEvents::ON_INACTIVE_CONNECTION:
+                    {
+                        const ConnectionMessageFlyweight connectionMessage(buffer, offset);
+
+                        m_driverListener.onInactiveConnection(
+                            connectionMessage.streamId(),
+                            connectionMessage.sessionId(),
+                            connectionMessage.position(),
+                            connectionMessage.correlationId());
+                    }
+                    break;
 
                     case ControlProtocolEvents::ON_ERROR:
                     {
 
-                    };
+                    }
+                    break;
 
                     default:
                         break;

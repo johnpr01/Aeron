@@ -15,20 +15,21 @@
  */
 package uk.co.real_logic.aeron.driver;
 
-import static org.hamcrest.CoreMatchers.is;
-import static org.hamcrest.MatcherAssert.assertThat;
-
-import java.net.*;
-import java.util.HashMap;
-import java.util.Map;
-
 import org.hamcrest.Description;
 import org.hamcrest.Matcher;
 import org.hamcrest.TypeSafeMatcher;
 import org.junit.Assume;
 import org.junit.Test;
-
 import uk.co.real_logic.aeron.driver.exceptions.InvalidChannelException;
+import uk.co.real_logic.aeron.driver.media.UdpChannel;
+import uk.co.real_logic.agrona.BitUtil;
+
+import java.net.*;
+import java.util.HashMap;
+import java.util.Map;
+
+import static org.hamcrest.CoreMatchers.is;
+import static org.hamcrest.MatcherAssert.assertThat;
 
 public class UdpChannelTest
 {
@@ -124,7 +125,7 @@ public class UdpChannelTest
         assertThat(udpChannel.localInterface(), is(NetworkInterface.getByInetAddress(InetAddress.getByName("localhost"))));
     }
 
-    private Matcher<InetSocketAddress> isMulticastAddress(String addressName, int port) throws UnknownHostException
+    private Matcher<InetSocketAddress> isMulticastAddress(final String addressName, final int port) throws UnknownHostException
     {
         final InetAddress inetAddress = InetAddress.getByName(addressName);
         return is(new InetSocketAddress(inetAddress, port));
@@ -230,27 +231,41 @@ public class UdpChannelTest
     @Test
     public void shouldGetProtocolFamilyForIpV4() throws Exception
     {
-        UdpChannel udpChannel = UdpChannel.parse("aeron:udp?local=127.0.0.1|remote=127.0.0.1:12345");
+        final UdpChannel udpChannel = UdpChannel.parse("aeron:udp?local=127.0.0.1|remote=127.0.0.1:12345");
         assertThat(udpChannel.protocolFamily(), is((ProtocolFamily) StandardProtocolFamily.INET));
     }
 
     @Test
     public void shouldGetProtocolFamilyForIpV6() throws Exception
     {
-        UdpChannel udpChannel = UdpChannel.parse("aeron:udp?local=[::1]|remote=[::1]:12345");
+        final UdpChannel udpChannel = UdpChannel.parse("aeron:udp?local=[::1]|remote=[::1]:12345");
         assertThat(udpChannel.protocolFamily(), is((ProtocolFamily) StandardProtocolFamily.INET6));
     }
 
     @Test
-    public void shouldHandleCanonicalFormWithExampleCom() throws Exception
+    public void shouldGetProtocolFamilyForIpV4WithoutLocalSpecified() throws Exception
     {
-        final String exampleDotCom = resolveToHexAddress("example.com");
+        final UdpChannel udpChannel = UdpChannel.parse("aeron:udp?remote=127.0.0.1:12345");
+        assertThat(udpChannel.protocolFamily(), is((ProtocolFamily) StandardProtocolFamily.INET));
+    }
 
-        final UdpChannel udpChannelExampleCom0 = UdpChannel.parse("aeron:udp?remote=example.com:40456");
-        assertThat(udpChannelExampleCom0.canonicalForm(), is("UDP-00000000-0-" + exampleDotCom + "-40456"));
+    @Test
+    public void shouldGetProtocolFamilyForIpV6WithoutLocalSpecified() throws Exception
+    {
+        final UdpChannel udpChannel = UdpChannel.parse("aeron:udp?remote=[::1]:12345");
+        assertThat(udpChannel.protocolFamily(), is((ProtocolFamily) StandardProtocolFamily.INET6));
+    }
 
-        final UdpChannel udpChannelExampleCom1 = UdpChannel.parse("udp://example.com:40456");
-        assertThat(udpChannelExampleCom1.canonicalForm(), is("UDP-00000000-0-" + exampleDotCom + "-40456"));
+    @Test
+    public void shouldHandleCanonicalFormWithNsLookup() throws Exception
+    {
+        final String localhostIpAsHex = resolveToHexAddress("localhost");
+
+        final UdpChannel udpChannelExampleCom0 = UdpChannel.parse("aeron:udp?remote=localhost:40456");
+        assertThat(udpChannelExampleCom0.canonicalForm(), is("UDP-00000000-0-" + localhostIpAsHex + "-40456"));
+
+        final UdpChannel udpChannelExampleCom1 = UdpChannel.parse("udp://localhost:40456");
+        assertThat(udpChannelExampleCom1.canonicalForm(), is("UDP-00000000-0-" + localhostIpAsHex + "-40456"));
     }
 
     @Test
@@ -268,7 +283,7 @@ public class UdpChannelTest
     {
         final UdpChannel udpChannel = UdpChannel.parse("udp://localhost@224.0.1.1:40456");
         final UdpChannel udpChannelLocal = UdpChannel.parse("udp://127.0.0.1@224.0.1.1:40456");
-        final UdpChannel udpChannelAllSystems = UdpChannel.parse("udp://localhost@all-systems.mcast.net:40456");
+        final UdpChannel udpChannelAllSystems = UdpChannel.parse("udp://localhost@224.0.0.1:40456");
         final UdpChannel udpChannelDefault = UdpChannel.parse("udp://224.0.1.1:40456");
 
         final UdpChannel udpChannelSubnet = UdpChannel.parse("udp://localhost@224.0.1.1:40456?subnetPrefix=24");
@@ -289,7 +304,7 @@ public class UdpChannelTest
         final UdpChannel udpChannel = UdpChannel.parse("aeron:udp?interface=localhost|group=224.0.1.1:40456");
         final UdpChannel udpChannelLocal = UdpChannel.parse("aeron:udp?interface=127.0.0.1|group=224.0.1.1:40456");
         final UdpChannel udpChannelAllSystems =
-            UdpChannel.parse("aeron:udp?interface=localhost|group=all-systems.mcast.net:40456");
+            UdpChannel.parse("aeron:udp?interface=localhost|group=224.0.0.1:40456");
         final UdpChannel udpChannelDefault = UdpChannel.parse("aeron:udp?group=224.0.1.1:40456");
         final UdpChannel udpChannelSubnet = UdpChannel.parse("aeron:udp?interface=localhost/24|group=224.0.1.1:40456");
         final UdpChannel udpChannelSubnetLocal = UdpChannel.parse("aeron:udp?interface=127.0.0.0/24|group=224.0.1.1:40456");
@@ -331,7 +346,7 @@ public class UdpChannelTest
             }
 
             @Override
-            protected boolean matchesSafely(NetworkInterface item)
+            protected boolean matchesSafely(final NetworkInterface item)
             {
                 try
                 {
@@ -345,17 +360,8 @@ public class UdpChannelTest
         };
     }
 
-    private String resolveToHexAddress(String host) throws UnknownHostException
+    private String resolveToHexAddress(final String host) throws UnknownHostException
     {
-        final InetAddress address = InetAddress.getByName(host);
-        String asHex = "";
-
-        final byte[] address2 = address.getAddress();
-        for (final byte b : address2)
-        {
-            final int i = (0xFF) & b;
-            asHex += Integer.toHexString(i);
-        }
-        return asHex;
+        return BitUtil.toHex(InetAddress.getByName(host).getAddress());
     }
 }

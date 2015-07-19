@@ -15,55 +15,57 @@
  */
 package uk.co.real_logic.aeron;
 
-import uk.co.real_logic.aeron.common.concurrent.logbuffer.DataHandler;
-import uk.co.real_logic.aeron.common.concurrent.logbuffer.LogReader;
-import uk.co.real_logic.agrona.status.PositionReporter;
+import uk.co.real_logic.aeron.logbuffer.FragmentHandler;
+import uk.co.real_logic.aeron.logbuffer.Header;
+import uk.co.real_logic.agrona.ErrorHandler;
+import uk.co.real_logic.agrona.ManagedResource;
+import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
+import uk.co.real_logic.agrona.concurrent.status.Position;
 
-import static uk.co.real_logic.aeron.common.concurrent.logbuffer.LogBufferDescriptor.*;
+import java.util.Arrays;
+
+import static uk.co.real_logic.aeron.logbuffer.LogBufferDescriptor.*;
+import static uk.co.real_logic.aeron.logbuffer.TermReader.*;
 
 /**
- * A Connection from a publisher to a subscriber within a given session.
+ * Represents an incoming Connection from a publisher to a {@link Subscription}.
+ * Each connection identifies source publisher by session id.
  */
-class Connection
+class Connection implements ManagedResource
 {
-    private final LogBuffers logBuffers;
-    private final LogReader[] logReaders;
-    private final DataHandler dataHandler;
-    private final PositionReporter subscriberPosition;
+    private long timeOfLastStateChange = 0;
     private final long correlationId;
     private final int sessionId;
+    private final int termLengthMask;
     private final int positionBitsToShift;
-    private final int initialTermId;
 
-    private int activeIndex;
-    private int activeTermId;
+    private final Position subscriberPosition;
+    private final UnsafeBuffer[] termBuffers;
+    private final Header header;
+    private final LogBuffers logBuffers;
 
     public Connection(
-        final LogReader[] readers,
         final int sessionId,
-        final int initialTermId,
         final long initialPosition,
         final long correlationId,
-        final DataHandler dataHandler,
-        final PositionReporter subscriberPosition,
+        final Position subscriberPosition,
         final LogBuffers logBuffers)
     {
-        this.logReaders = readers;
         this.correlationId = correlationId;
         this.sessionId = sessionId;
-        this.dataHandler = dataHandler;
         this.subscriberPosition = subscriberPosition;
         this.logBuffers = logBuffers;
-        this.positionBitsToShift = Integer.numberOfTrailingZeros(logReaders[0].termBuffer().capacity());
-        this.initialTermId = initialTermId;
 
-        final int currentTermId = computeTermIdFromPosition(initialPosition, positionBitsToShift, initialTermId);
-        final int initialTermOffset = computeTermOffsetFromPosition(initialPosition, positionBitsToShift);
-        this.activeTermId = currentTermId;
-        this.activeIndex = indexByTerm(initialTermId, currentTermId);
+        final UnsafeBuffer[] buffers = logBuffers.atomicBuffers();
+        termBuffers = Arrays.copyOf(buffers, PARTITION_COUNT);
 
-        logReaders[activeIndex].seek(initialTermOffset);
-        subscriberPosition.position(initialPosition);
+        final int capacity = termBuffers[0].capacity();
+        this.termLengthMask = capacity - 1;
+        this.positionBitsToShift = Integer.numberOfTrailingZeros(capacity);
+        final int initialTermId = initialTermId(buffers[LOG_META_DATA_SECTION_INDEX]);
+        header = new Header(initialTermId, capacity);
+
+        subscriberPosition.setOrdered(initialPosition);
     }
 
     public int sessionId()
@@ -76,30 +78,34 @@ class Connection
         return correlationId;
     }
 
-    public int poll(final int fragmentCountLimit)
+    public int poll(final FragmentHandler fragmentHandler, final int fragmentLimit, final ErrorHandler errorHandler)
     {
-        LogReader logReader = logReaders[activeIndex];
+        final long position = subscriberPosition.get();
+        final int termOffset = (int)position & termLengthMask;
+        final UnsafeBuffer termBuffer = termBuffers[indexByPosition(position, positionBitsToShift)];
 
-        if (logReader.isComplete())
+        final long readOutcome = read(termBuffer, termOffset, fragmentHandler, fragmentLimit, header, errorHandler);
+
+        final long newPosition = position + (offset(readOutcome) - termOffset);
+        if (newPosition > position)
         {
-            final int nextIndex = nextPartitionIndex(activeIndex);
-            logReader = logReaders[nextIndex];
-            logReader.seek(0);
-            ++activeTermId;
-            activeIndex = nextIndex;
+            subscriberPosition.setOrdered(newPosition);
         }
 
-        final int messagesRead = logReader.read(dataHandler, fragmentCountLimit);
-        if (messagesRead > 0)
-        {
-            final long position = computePosition(activeTermId, logReader.offset(), positionBitsToShift, initialTermId);
-            subscriberPosition.position(position);
-        }
-
-        return messagesRead;
+        return fragmentsRead(readOutcome);
     }
 
-    public void close()
+    public void timeOfLastStateChange(final long time)
+    {
+        this.timeOfLastStateChange = time;
+    }
+
+    public long timeOfLastStateChange()
+    {
+        return timeOfLastStateChange;
+    }
+
+    public void delete()
     {
         logBuffers.close();
     }

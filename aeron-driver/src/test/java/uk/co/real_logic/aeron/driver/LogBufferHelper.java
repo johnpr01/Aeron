@@ -15,15 +15,15 @@
  */
 package uk.co.real_logic.aeron.driver;
 
-import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
-import uk.co.real_logic.aeron.driver.buffer.RawLogPartition;
 import uk.co.real_logic.aeron.driver.buffer.RawLog;
+import uk.co.real_logic.aeron.driver.buffer.RawLogPartition;
+import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
 
 import java.nio.ByteBuffer;
 import java.util.stream.Stream;
 
-import static uk.co.real_logic.aeron.common.concurrent.logbuffer.LogBufferDescriptor.PARTITION_COUNT;
-import static uk.co.real_logic.aeron.common.concurrent.logbuffer.LogBufferDescriptor.LOG_META_DATA_LENGTH;
+import static uk.co.real_logic.aeron.logbuffer.LogBufferDescriptor.LOG_META_DATA_LENGTH;
+import static uk.co.real_logic.aeron.logbuffer.LogBufferDescriptor.PARTITION_COUNT;
 
 public class LogBufferHelper
 {
@@ -38,7 +38,7 @@ public class LogBufferHelper
                 newTestLogBuffer(termLength, metaDataLength),
             };
 
-            private final UnsafeBuffer logMetaData = new UnsafeBuffer(new byte[LOG_META_DATA_LENGTH]);
+            private final UnsafeBuffer logMetaData = new UnsafeBuffer(ByteBuffer.allocateDirect(LOG_META_DATA_LENGTH));
 
             public Stream<RawLogPartition> stream()
             {
@@ -80,7 +80,7 @@ public class LogBufferHelper
     private static RawLogPartition newTestLogBuffer(final int termBufferLength, final int metaDataBufferLength)
     {
         return new RawLogPartition(
-            new UnsafeBuffer(ByteBuffer.allocate(termBufferLength)),
-            new UnsafeBuffer(ByteBuffer.allocate(metaDataBufferLength)));
+            new UnsafeBuffer(ByteBuffer.allocateDirect(termBufferLength)),
+            new UnsafeBuffer(ByteBuffer.allocateDirect(metaDataBufferLength)));
     }
 }

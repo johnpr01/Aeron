@@ -25,8 +25,8 @@ public class SystemCounters implements AutoCloseable
     private final AtomicCounter receiverProxyFails;
     private final AtomicCounter senderProxyFails;
     private final AtomicCounter conductorProxyFails;
-    private final AtomicCounter naksSent;
-    private final AtomicCounter naksReceived;
+    private final AtomicCounter nakMessagesSent;
+    private final AtomicCounter nakMessagesReceived;
     private final AtomicCounter retransmitsSent;
     private final AtomicCounter statusMessagesSent;
     private final AtomicCounter statusMessagesReceived;
@@ -36,10 +36,10 @@ public class SystemCounters implements AutoCloseable
     private final AtomicCounter flowControlOverRuns;
     private final AtomicCounter invalidPackets;
     private final AtomicCounter driverExceptions;
-    private final AtomicCounter dataFrameShortSends;
-    private final AtomicCounter setupFrameShortSends;
-    private final AtomicCounter nakFrameShortSends;
-    private final AtomicCounter smFrameShortSends;
+    private final AtomicCounter dataPacketShortSends;
+    private final AtomicCounter setupMessageShortSends;
+    private final AtomicCounter statusMessageShortSends;
+    private final AtomicCounter nakMessageShortSends;
     private final AtomicCounter clientKeepAlives;
     private final AtomicCounter senderFlowControlLimits;
 
@@ -50,8 +50,8 @@ public class SystemCounters implements AutoCloseable
         receiverProxyFails = countersManager.newCounter("Failed offers to ReceiverProxy");
         senderProxyFails = countersManager.newCounter("Failed offers to SenderProxy");
         conductorProxyFails = countersManager.newCounter("Failed offers to DriverConductorProxy");
-        naksSent = countersManager.newCounter("NAKs sent");
-        naksReceived = countersManager.newCounter("NAKs received");
+        nakMessagesSent = countersManager.newCounter("NAKs sent");
+        nakMessagesReceived = countersManager.newCounter("NAKs received");
         statusMessagesSent = countersManager.newCounter("SMs sent");
         statusMessagesReceived = countersManager.newCounter("SMs received");
         heartbeatsSent = countersManager.newCounter("Heartbeats sent");
@@ -61,10 +61,10 @@ public class SystemCounters implements AutoCloseable
         flowControlOverRuns = countersManager.newCounter("Flow control over runs");
         invalidPackets = countersManager.newCounter("Invalid packets");
         driverExceptions = countersManager.newCounter("Driver Exceptions");
-        dataFrameShortSends = countersManager.newCounter("Data Frame short sends");
-        setupFrameShortSends = countersManager.newCounter("Setup Frame short sends");
-        nakFrameShortSends = countersManager.newCounter("NAK Frame short sends");
-        smFrameShortSends = countersManager.newCounter("SM Frame short sends");
+        dataPacketShortSends = countersManager.newCounter("Data Packet short sends");
+        setupMessageShortSends = countersManager.newCounter("Setup Message short sends");
+        statusMessageShortSends = countersManager.newCounter("Status Message short sends");
+        nakMessageShortSends = countersManager.newCounter("NAK Message short sends");
         clientKeepAlives = countersManager.newCounter("Client keep-alives");
         senderFlowControlLimits = countersManager.newCounter("Sender flow control limits applied");
     }
@@ -76,8 +76,8 @@ public class SystemCounters implements AutoCloseable
         receiverProxyFails.close();
         senderProxyFails.close();
         conductorProxyFails.close();
-        naksSent.close();
-        naksReceived.close();
+        nakMessagesSent.close();
+        nakMessagesReceived.close();
         statusMessagesSent.close();
         statusMessagesReceived.close();
         heartbeatsSent.close();
@@ -87,10 +87,10 @@ public class SystemCounters implements AutoCloseable
         flowControlOverRuns.close();
         invalidPackets.close();
         driverExceptions.close();
-        dataFrameShortSends.close();
-        setupFrameShortSends.close();
-        nakFrameShortSends.close();
-        smFrameShortSends.close();
+        dataPacketShortSends.close();
+        setupMessageShortSends.close();
+        statusMessageShortSends.close();
+        nakMessageShortSends.close();
         clientKeepAlives.close();
         senderFlowControlLimits.close();
     }
@@ -120,14 +120,14 @@ public class SystemCounters implements AutoCloseable
         return conductorProxyFails;
     }
 
-    public AtomicCounter naksSent()
+    public AtomicCounter nakMessagesSent()
     {
-        return naksSent;
+        return nakMessagesSent;
     }
 
-    public AtomicCounter naksReceived()
+    public AtomicCounter nakMessagesReceived()
     {
-        return naksReceived;
+        return nakMessagesReceived;
     }
 
     public AtomicCounter retransmitsSent()
@@ -175,24 +175,23 @@ public class SystemCounters implements AutoCloseable
         return driverExceptions;
     }
 
-    public AtomicCounter dataFrameShortSends()
+    public AtomicCounter dataPacketShortSends()
     {
-        return dataFrameShortSends;
+        return dataPacketShortSends;
     }
 
-    public AtomicCounter setupFrameShortSends()
+    public AtomicCounter setupMessageShortSends()
     {
-        return setupFrameShortSends;
+        return setupMessageShortSends;
     }
 
-    public AtomicCounter nakFrameShortSends()
+    public AtomicCounter statusMessageShortSends()
     {
-        return nakFrameShortSends;
+        return statusMessageShortSends;
     }
-
-    public AtomicCounter smFrameShortSends()
+    public AtomicCounter nakMessageShortSends()
     {
-        return smFrameShortSends;
+        return nakMessageShortSends;
     }
 
     public AtomicCounter clientKeepAlives()

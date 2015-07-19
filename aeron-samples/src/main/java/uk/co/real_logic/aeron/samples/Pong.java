@@ -15,18 +15,23 @@
  */
 package uk.co.real_logic.aeron.samples;
 
-import uk.co.real_logic.aeron.*;
-import uk.co.real_logic.aeron.common.concurrent.SigInt;
+import uk.co.real_logic.aeron.Aeron;
+import uk.co.real_logic.aeron.FragmentAssemblyAdapter;
+import uk.co.real_logic.aeron.Publication;
+import uk.co.real_logic.aeron.Subscription;
 import uk.co.real_logic.aeron.driver.MediaDriver;
 import uk.co.real_logic.agrona.CloseHelper;
 import uk.co.real_logic.agrona.DirectBuffer;
 import uk.co.real_logic.agrona.concurrent.BusySpinIdleStrategy;
+import uk.co.real_logic.agrona.concurrent.IdleStrategy;
+import uk.co.real_logic.agrona.concurrent.NoOpIdleStrategy;
+import uk.co.real_logic.agrona.concurrent.SigInt;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Pong component of Ping-Pong.
- *
+ * <p>
  * Echoes back messages
  */
 public class Pong
@@ -42,12 +47,15 @@ public class Pong
 
     public static void main(final String[] args) throws Exception
     {
-        SamplesUtil.useSharedMemoryOnLinux();
-
-        final MediaDriver driver = EMBEDDED_MEDIA_DRIVER ? MediaDriver.launch() : null;
+        final MediaDriver driver = EMBEDDED_MEDIA_DRIVER ? MediaDriver.launchEmbedded() : null;
 
         final Aeron.Context ctx = new Aeron.Context();
-        final BusySpinIdleStrategy idleStrategy = new BusySpinIdleStrategy();
+        if (EMBEDDED_MEDIA_DRIVER)
+        {
+            ctx.dirName(driver.contextDirName());
+        }
+
+        final IdleStrategy idleStrategy = new NoOpIdleStrategy();
 
         System.out.println("Subscribing Ping at " + PING_CHANNEL + " on stream Id " + PING_STREAM_ID);
         System.out.println("Publishing Pong at " + PONG_CHANNEL + " on stream Id " + PONG_STREAM_ID);
@@ -55,15 +63,17 @@ public class Pong
         final AtomicBoolean running = new AtomicBoolean(true);
         SigInt.register(() -> running.set(false));
 
+
         try (final Aeron aeron = Aeron.connect(ctx);
              final Publication pongPublication = aeron.addPublication(PONG_CHANNEL, PONG_STREAM_ID);
-             final Subscription pingSubscription = aeron.addSubscription(PING_CHANNEL, PING_STREAM_ID,
-                 new FragmentAssemblyAdapter(
-                     (buffer, offset, length, header) -> pingHandler(pongPublication, buffer, offset, length))))
+             final Subscription pingSubscription = aeron.addSubscription(PING_CHANNEL, PING_STREAM_ID))
         {
+            final FragmentAssemblyAdapter dataHandler = new FragmentAssemblyAdapter(
+                (buffer, offset, length, header) -> pingHandler(pongPublication, buffer, offset, length));
+
             while (running.get())
             {
-                final int fragmentsRead = pingSubscription.poll(FRAME_COUNT_LIMIT);
+                final int fragmentsRead = pingSubscription.poll(dataHandler, FRAME_COUNT_LIMIT);
                 idleStrategy.idle(fragmentsRead);
             }
 
@@ -73,10 +83,10 @@ public class Pong
         CloseHelper.quietClose(driver);
     }
 
-    public static void pingHandler(
+    private static void pingHandler(
         final Publication pongPublication, final DirectBuffer buffer, final int offset, final int length)
     {
-        while (!pongPublication.offer(buffer, offset, length))
+        while (pongPublication.offer(buffer, offset, length) < 0L)
         {
             PING_HANDLER_IDLE_STRATEGY.idle(0);
         }

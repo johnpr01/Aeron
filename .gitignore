@@ -8,14 +8,16 @@ out
 # OS X
 .DS_Store
 
-# intellij
-.idea
-*.iml
-
 # eclipse
 .project
 .classpath
 .settings
+
+# intellij
+*.iml
+*.ipr
+*.iws
+.idea
 
 # editors
 *.sublime-project

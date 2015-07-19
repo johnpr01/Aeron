@@ -15,13 +15,18 @@
  */
 package uk.co.real_logic.aeron.samples.raw;
 
-import uk.co.real_logic.aeron.driver.NioSelectedKeySet;
+import uk.co.real_logic.aeron.driver.media.NioSelectedKeySet;
 import uk.co.real_logic.agrona.IoUtil;
 
-import java.io.*;
+import java.io.File;
+import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.lang.reflect.Field;
+import java.net.InetSocketAddress;
 import java.net.StandardSocketOptions;
-import java.nio.channels.*;
+import java.nio.channels.DatagramChannel;
+import java.nio.channels.FileChannel;
+import java.nio.channels.Selector;
 
 import static uk.co.real_logic.aeron.driver.Configuration.MTU_LENGTH_DEFAULT;
 
@@ -65,6 +70,14 @@ public class Common
     {
         channel.configureBlocking(false);
         channel.setOption(StandardSocketOptions.SO_REUSEADDR, true);
+    }
+
+    public static void init(final DatagramChannel channel, final InetSocketAddress sendAddress)
+        throws IOException
+    {
+        channel.configureBlocking(false);
+        channel.setOption(StandardSocketOptions.SO_REUSEADDR, true);
+        channel.connect(sendAddress);
     }
 
     public static NioSelectedKeySet keySet(final Selector selector)

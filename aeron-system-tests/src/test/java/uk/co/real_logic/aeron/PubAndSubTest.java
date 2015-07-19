@@ -22,17 +22,17 @@ import org.junit.experimental.theories.Theories;
 import org.junit.experimental.theories.Theory;
 import org.junit.runner.RunWith;
 import org.mockito.InOrder;
+import uk.co.real_logic.aeron.logbuffer.FragmentHandler;
+import uk.co.real_logic.aeron.logbuffer.Header;
+import uk.co.real_logic.aeron.protocol.DataHeaderFlyweight;
+import uk.co.real_logic.aeron.driver.MediaDriver;
+import uk.co.real_logic.aeron.driver.ThreadingMode;
 import uk.co.real_logic.agrona.BitUtil;
 import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
-import uk.co.real_logic.aeron.common.concurrent.logbuffer.DataHandler;
-import uk.co.real_logic.aeron.common.concurrent.logbuffer.Header;
-import uk.co.real_logic.aeron.common.protocol.DataHeaderFlyweight;
-import uk.co.real_logic.aeron.driver.MediaDriver;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertTrue;
 import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.*;
 
@@ -50,6 +50,7 @@ public class PubAndSubTest
 
     private static final int STREAM_ID = 1;
     private static final int SESSION_ID = 2;
+    private static final ThreadingMode THREADING_MODE = ThreadingMode.SHARED;
 
     private final MediaDriver.Context context = new MediaDriver.Context();
     private final Aeron.Context publishingAeronContext = new Aeron.Context();
@@ -62,17 +63,18 @@ public class PubAndSubTest
     private Publication publication;
 
     private UnsafeBuffer buffer = new UnsafeBuffer(new byte[8192]);
-    private DataHandler dataHandler = mock(DataHandler.class);
+    private FragmentHandler fragmentHandler = mock(FragmentHandler.class);
 
     private void launch(final String channel) throws Exception
     {
         context.dirsDeleteOnExit(true);
+        context.threadingMode(THREADING_MODE);
 
         driver = MediaDriver.launch(context);
         publishingClient = Aeron.connect(publishingAeronContext);
         subscribingClient = Aeron.connect(subscribingAeronContext);
         publication = publishingClient.addPublication(channel, STREAM_ID, SESSION_ID);
-        subscription = subscribingClient.addSubscription(channel, STREAM_ID, dataHandler);
+        subscription = subscribingClient.addSubscription(channel, STREAM_ID);
     }
 
     @After
@@ -108,20 +110,23 @@ public class PubAndSubTest
 
         buffer.putInt(0, 1);
 
-        assertTrue(publication.offer(buffer, 0, BitUtil.SIZE_OF_INT));
+        while (publication.offer(buffer, 0, BitUtil.SIZE_OF_INT) < 0L)
+        {
+            Thread.yield();
+        }
 
         final int fragmentsRead[] = new int[1];
         SystemTestHelper.executeUntil(
             () -> fragmentsRead[0] > 0,
             (i) ->
             {
-                fragmentsRead[0] += subscription.poll(10);
+                fragmentsRead[0] += subscription.poll(fragmentHandler, 10);
                 Thread.yield();
             },
             Integer.MAX_VALUE,
-            TimeUnit.MILLISECONDS.toNanos(900));
+            TimeUnit.MILLISECONDS.toNanos(9900));
 
-        verify(dataHandler).onData(
+        verify(fragmentHandler).onFragment(
             any(UnsafeBuffer.class),
             eq(DataHeaderFlyweight.HEADER_LENGTH),
             eq(BitUtil.SIZE_OF_INT),
@@ -143,7 +148,7 @@ public class PubAndSubTest
 
         for (int i = 0; i < numMessagesToSend; i++)
         {
-            while (!publication.offer(buffer, 0, messageLength))
+            while (publication.offer(buffer, 0, messageLength) < 0L)
             {
                 Thread.yield();
             }
@@ -153,14 +158,14 @@ public class PubAndSubTest
                 () -> fragmentsRead[0] > 0,
                 (j) ->
                 {
-                    fragmentsRead[0] += subscription.poll(10);
+                    fragmentsRead[0] += subscription.poll(fragmentHandler, 10);
                     Thread.yield();
                 },
                 Integer.MAX_VALUE,
                 TimeUnit.MILLISECONDS.toNanos(500));
         }
 
-        verify(dataHandler, times(numMessagesToSend)).onData(
+        verify(fragmentHandler, times(numMessagesToSend)).onFragment(
             any(UnsafeBuffer.class),
             anyInt(),
             eq(messageLength),
@@ -185,7 +190,7 @@ public class PubAndSubTest
         // lock step reception until we get to within 8 messages of the end
         for (int i = 0; i < num1kMessagesInTermBuffer - 7; i++)
         {
-            while (!publication.offer(buffer, 0, messageLength))
+            while (publication.offer(buffer, 0, messageLength) < 0L)
             {
                 Thread.yield();
             }
@@ -195,7 +200,7 @@ public class PubAndSubTest
                 () -> fragmentsRead[0] > 0,
                 (j) ->
                 {
-                    fragmentsRead[0] += subscription.poll(10);
+                    fragmentsRead[0] += subscription.poll(fragmentHandler, 10);
                     Thread.yield();
                 },
                 Integer.MAX_VALUE,
@@ -204,20 +209,20 @@ public class PubAndSubTest
 
         for (int i = 7; i > 0; i--)
         {
-            while (!publication.offer(buffer, 0, messageLength))
+            while (publication.offer(buffer, 0, messageLength) < 0L)
             {
                 Thread.yield();
             }
         }
 
         // small enough to leave room for padding that is just a header
-        while (!publication.offer(buffer, 0, lastMessageLength))
+        while (publication.offer(buffer, 0, lastMessageLength) < 0L)
         {
             Thread.yield();
         }
 
         // no roll over
-        while (!publication.offer(buffer, 0, messageLength))
+        while (publication.offer(buffer, 0, messageLength) < 0L)
         {
             Thread.yield();
         }
@@ -227,25 +232,25 @@ public class PubAndSubTest
             () -> fragmentsRead[0] == 9,
             (j) ->
             {
-                fragmentsRead[0] += subscription.poll(10);
+                fragmentsRead[0] += subscription.poll(fragmentHandler, 10);
                 Thread.yield();
             },
             Integer.MAX_VALUE,
             TimeUnit.MILLISECONDS.toNanos(500));
 
-        final InOrder inOrder = inOrder(dataHandler);
+        final InOrder inOrder = inOrder(fragmentHandler);
 
-        inOrder.verify(dataHandler, times(num1kMessagesInTermBuffer)).onData(
+        inOrder.verify(fragmentHandler, times(num1kMessagesInTermBuffer)).onFragment(
             any(UnsafeBuffer.class),
             anyInt(),
             eq(messageLength),
             any(Header.class));
-        inOrder.verify(dataHandler, times(1)).onData(
+        inOrder.verify(fragmentHandler, times(1)).onFragment(
             any(UnsafeBuffer.class),
             anyInt(),
             eq(lastMessageLength),
             any(Header.class));
-        inOrder.verify(dataHandler, times(1)).onData(
+        inOrder.verify(fragmentHandler, times(1)).onFragment(
             any(UnsafeBuffer.class),
             anyInt(),
             eq(messageLength),
@@ -269,7 +274,7 @@ public class PubAndSubTest
 
         for (int i = 0; i < numMessagesToSend; i++)
         {
-            while (!publication.offer(buffer, 0, messageLength))
+            while (publication.offer(buffer, 0, messageLength) < 0L)
             {
                 Thread.yield();
             }
@@ -279,14 +284,14 @@ public class PubAndSubTest
                 () -> fragmentsRead[0] > 0,
                 (j) ->
                 {
-                    fragmentsRead[0] += subscription.poll(10);
+                    fragmentsRead[0] += subscription.poll(fragmentHandler, 10);
                     Thread.yield();
                 },
                 Integer.MAX_VALUE,
                 TimeUnit.MILLISECONDS.toNanos(900));
         }
 
-        verify(dataHandler, times(numMessagesToSend)).onData(
+        verify(fragmentHandler, times(numMessagesToSend)).onFragment(
             any(UnsafeBuffer.class),
             anyInt(),
             eq(messageLength),
@@ -314,7 +319,7 @@ public class PubAndSubTest
         {
             for (int j = 0; j < numMessagesPerBatch; j++)
             {
-                while (!publication.offer(buffer, 0, messageLength))
+                while (publication.offer(buffer, 0, messageLength) < 0L)
                 {
                     Thread.yield();
                 }
@@ -325,14 +330,14 @@ public class PubAndSubTest
                 () -> fragmentsRead[0] >= numMessagesPerBatch,
                 (j) ->
                 {
-                    fragmentsRead[0] += subscription.poll(10);
+                    fragmentsRead[0] += subscription.poll(fragmentHandler, 10);
                     Thread.yield();
                 },
                 Integer.MAX_VALUE,
                 TimeUnit.MILLISECONDS.toNanos(900));
         }
 
-        verify(dataHandler, times(numMessagesToSend)).onData(
+        verify(fragmentHandler, times(numMessagesToSend)).onFragment(
             any(UnsafeBuffer.class),
             anyInt(),
             eq(messageLength),
@@ -358,7 +363,7 @@ public class PubAndSubTest
         {
             for (int j = 0; j < numMessagesPerBatch; j++)
             {
-                while (!publication.offer(buffer, 0, messageLength))
+                while (publication.offer(buffer, 0, messageLength) < 0L)
                 {
                     Thread.yield();
                 }
@@ -369,14 +374,14 @@ public class PubAndSubTest
                 () -> fragmentsRead[0] >= numMessagesPerBatch,
                 (j) ->
                 {
-                    fragmentsRead[0] += subscription.poll(10);
+                    fragmentsRead[0] += subscription.poll(fragmentHandler, 10);
                     Thread.yield();
                 },
                 Integer.MAX_VALUE,
                 TimeUnit.MILLISECONDS.toNanos(900));
         }
 
-        while (!publication.offer(buffer, 0, messageLength))
+        while (publication.offer(buffer, 0, messageLength) < 0L)
         {
             Thread.yield();
         }
@@ -386,13 +391,13 @@ public class PubAndSubTest
             () -> fragmentsRead[0] > 0,
             (j) ->
             {
-                fragmentsRead[0] += subscription.poll(10);
+                fragmentsRead[0] += subscription.poll(fragmentHandler, 10);
                 Thread.yield();
             },
             Integer.MAX_VALUE,
             TimeUnit.MILLISECONDS.toNanos(900));
 
-        verify(dataHandler, times(numMessagesToSend)).onData(
+        verify(fragmentHandler, times(numMessagesToSend)).onFragment(
             any(UnsafeBuffer.class),
             anyInt(),
             eq(messageLength),
@@ -419,7 +424,7 @@ public class PubAndSubTest
 
         for (int i = 0; i < numMessagesToSend; i++)
         {
-            while (!publication.offer(buffer, 0, messageLength))
+            while (publication.offer(buffer, 0, messageLength) < 0L)
             {
                 Thread.yield();
             }
@@ -429,14 +434,14 @@ public class PubAndSubTest
                 () -> fragmentsRead[0] > 0,
                 (j) ->
                 {
-                    fragmentsRead[0] += subscription.poll(10);
+                    fragmentsRead[0] += subscription.poll(fragmentHandler, 10);
                     Thread.yield();
                 },
                 Integer.MAX_VALUE,
                 TimeUnit.MILLISECONDS.toNanos(500));
         }
 
-        verify(dataHandler, times(numMessagesToSend)).onData(
+        verify(fragmentHandler, times(numMessagesToSend)).onFragment(
             any(UnsafeBuffer.class),
             anyInt(),
             eq(messageLength),
@@ -467,7 +472,7 @@ public class PubAndSubTest
         {
             for (int j = 0; j < numMessagesPerBatch; j++)
             {
-                while (!publication.offer(buffer, 0, messageLength))
+                while (publication.offer(buffer, 0, messageLength) < 0L)
                 {
                     Thread.yield();
                 }
@@ -478,14 +483,14 @@ public class PubAndSubTest
                 () -> fragmentsRead[0] >= numMessagesPerBatch,
                 (j) ->
                 {
-                    fragmentsRead[0] += subscription.poll(10);
+                    fragmentsRead[0] += subscription.poll(fragmentHandler, 10);
                     Thread.yield();
                 },
                 Integer.MAX_VALUE,
                 TimeUnit.MILLISECONDS.toNanos(900));
         }
 
-        verify(dataHandler, times(numMessagesToSend)).onData(
+        verify(fragmentHandler, times(numMessagesToSend)).onFragment(
             any(UnsafeBuffer.class),
             anyInt(),
             eq(messageLength),
@@ -514,7 +519,7 @@ public class PubAndSubTest
         {
             int offerFails = 0;
 
-            while (!publication.offer(buffer, 0, messageLength))
+            while (publication.offer(buffer, 0, messageLength) < 0L)
             {
                 if (++offerFails > maxFails)
                 {
@@ -537,13 +542,13 @@ public class PubAndSubTest
             () -> fragmentsRead[0] >= messagesToReceive,
             (j) ->
             {
-                fragmentsRead[0] += subscription.poll(10);
+                fragmentsRead[0] += subscription.poll(fragmentHandler, 10);
                 Thread.yield();
             },
             Integer.MAX_VALUE,
             TimeUnit.MILLISECONDS.toNanos(500));
 
-        verify(dataHandler, times(messagesToReceive)).onData(
+        verify(fragmentHandler, times(messagesToReceive)).onFragment(
             any(UnsafeBuffer.class),
             anyInt(),
             eq(messageLength),
@@ -564,7 +569,7 @@ public class PubAndSubTest
 
         context.termBufferLength(termBufferLength);
         subscribingAeronContext.newConnectionHandler(
-            (c, streamId, sessionId, info) ->
+            (c, streamId, sessionId, position, info) ->
             {
                 if (2 == stage[0])
                 {
@@ -576,7 +581,7 @@ public class PubAndSubTest
 
         for (int i = 0; i < numMessagesToSendStageOne; i++)
         {
-            while (!publication.offer(buffer, 0, messageLength))
+            while (publication.offer(buffer, 0, messageLength) < 0L)
             {
                 Thread.yield();
             }
@@ -586,7 +591,7 @@ public class PubAndSubTest
                 () -> fragmentsRead[0] > 0,
                 (j) ->
                 {
-                    fragmentsRead[0] += subscription.poll(10);
+                    fragmentsRead[0] += subscription.poll(fragmentHandler, 10);
                     Thread.yield();
                 },
                 Integer.MAX_VALUE,
@@ -595,13 +600,13 @@ public class PubAndSubTest
 
         subscription.close();
         stage[0] = 2;
-        subscription = subscribingClient.addSubscription(channel, STREAM_ID, dataHandler);
+        subscription = subscribingClient.addSubscription(channel, STREAM_ID);
 
         newConnectionLatch.await();
 
         for (int i = 0; i < numMessagesToSendStageTwo; i++)
         {
-            while (!publication.offer(buffer, 0, messageLength))
+            while (publication.offer(buffer, 0, messageLength) < 0L)
             {
                 Thread.yield();
             }
@@ -611,14 +616,14 @@ public class PubAndSubTest
                 () -> fragmentsRead[0] > 0,
                 (j) ->
                 {
-                    fragmentsRead[0] += subscription.poll(10);
+                    fragmentsRead[0] += subscription.poll(fragmentHandler, 10);
                     Thread.yield();
                 },
                 Integer.MAX_VALUE,
                 TimeUnit.MILLISECONDS.toNanos(900));
         }
 
-        verify(dataHandler, times(numMessagesToSendStageOne + numMessagesToSendStageTwo)).onData(
+        verify(fragmentHandler, times(numMessagesToSendStageOne + numMessagesToSendStageTwo)).onFragment(
             any(UnsafeBuffer.class),
             anyInt(),
             eq(messageLength),
@@ -644,7 +649,7 @@ public class PubAndSubTest
 
         for (int i = 0; i < numMessagesToSend; i++)
         {
-            while (!publication.offer(buffer, 0, messageLength))
+            while (publication.offer(buffer, 0, messageLength) < 0L)
             {
                 Thread.yield();
             }
@@ -655,13 +660,13 @@ public class PubAndSubTest
             () -> fragmentsRead[0] > numFramesToExpect,
             (j) ->
             {
-                fragmentsRead[0] += subscription.poll(10);
+                fragmentsRead[0] += subscription.poll(fragmentHandler, 10);
                 Thread.yield();
             },
             Integer.MAX_VALUE,
             TimeUnit.MILLISECONDS.toNanos(500));
 
-        verify(dataHandler, times(numFramesToExpect)).onData(
+        verify(fragmentHandler, times(numFramesToExpect)).onFragment(
             any(UnsafeBuffer.class),
             anyInt(),
             eq(frameLength),

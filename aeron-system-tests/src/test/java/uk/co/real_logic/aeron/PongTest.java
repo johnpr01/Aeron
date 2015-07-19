@@ -18,17 +18,19 @@ package uk.co.real_logic.aeron;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
+import uk.co.real_logic.aeron.logbuffer.FragmentHandler;
+import uk.co.real_logic.aeron.logbuffer.Header;
+import uk.co.real_logic.aeron.protocol.DataHeaderFlyweight;
+import uk.co.real_logic.aeron.driver.MediaDriver;
+import uk.co.real_logic.aeron.driver.ThreadingMode;
 import uk.co.real_logic.agrona.BitUtil;
 import uk.co.real_logic.agrona.DirectBuffer;
 import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
-import uk.co.real_logic.aeron.common.concurrent.logbuffer.DataHandler;
-import uk.co.real_logic.aeron.common.concurrent.logbuffer.Header;
-import uk.co.real_logic.aeron.driver.MediaDriver;
 
 import java.util.concurrent.TimeUnit;
 
-import static org.junit.Assert.assertTrue;
-import static org.mockito.Matchers.*;
+import static org.mockito.Matchers.any;
+import static org.mockito.Matchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 
@@ -39,6 +41,7 @@ public class PongTest
 
     private static final int PING_STREAM_ID = 1;
     private static final int PONG_STREAM_ID = 2;
+    private static final ThreadingMode THREADING_MODE = ThreadingMode.SHARED;
 
     private final MediaDriver.Context context = new MediaDriver.Context();
     private final Aeron.Context pingAeronContext = new Aeron.Context();
@@ -53,22 +56,23 @@ public class PongTest
     private Publication pongPublication;
 
     private UnsafeBuffer buffer = new UnsafeBuffer(new byte[4096]);
-    private DataHandler pongHandler = mock(DataHandler.class);
+    private FragmentHandler pongHandler = mock(FragmentHandler.class);
 
     @Before
     public void setUp() throws Exception
     {
         context.dirsDeleteOnExit(true);
+        context.threadingMode(THREADING_MODE);
 
         driver = MediaDriver.launch(context);
         pingClient = Aeron.connect(pingAeronContext);
         pongClient = Aeron.connect(pongAeronContext);
 
         pingPublication = pingClient.addPublication(PING_URI, PING_STREAM_ID);
-        pingSubscription = pongClient.addSubscription(PING_URI, PING_STREAM_ID, this::pingHandler);
+        pingSubscription = pongClient.addSubscription(PING_URI, PING_STREAM_ID);
 
         pongPublication = pongClient.addPublication(PONG_URI, PONG_STREAM_ID);
-        pongSubscription = pingClient.addSubscription(PONG_URI, PONG_STREAM_ID, pongHandler);
+        pongSubscription = pingClient.addSubscription(PONG_URI, PONG_STREAM_ID);
     }
 
     @After
@@ -104,7 +108,10 @@ public class PongTest
     {
         buffer.putInt(0, 1);
 
-        assertTrue(pingPublication.offer(buffer, 0, BitUtil.SIZE_OF_INT));
+        while (pingPublication.offer(buffer, 0, BitUtil.SIZE_OF_INT) < 0L)
+        {
+            Thread.yield();
+        }
 
         final int fragmentsRead[] = new int[1];
 
@@ -112,11 +119,11 @@ public class PongTest
             () -> fragmentsRead[0] > 0,
             (i) ->
             {
-                fragmentsRead[0] += pingSubscription.poll(10);
+                fragmentsRead[0] += pingSubscription.poll(this::pingHandler, 10);
                 Thread.yield();
             },
             Integer.MAX_VALUE,
-            TimeUnit.MILLISECONDS.toNanos(900));
+            TimeUnit.MILLISECONDS.toNanos(5900));
 
         fragmentsRead[0] = 0;
 
@@ -124,15 +131,15 @@ public class PongTest
             () -> fragmentsRead[0] > 0,
             (i) ->
             {
-                fragmentsRead[0] += pongSubscription.poll(10);
+                fragmentsRead[0] += pongSubscription.poll(pongHandler, 10);
                 Thread.yield();
             },
             Integer.MAX_VALUE,
-            TimeUnit.MILLISECONDS.toNanos(900));
+            TimeUnit.MILLISECONDS.toNanos(5900));
 
-        verify(pongHandler).onData(
+        verify(pongHandler).onFragment(
             any(UnsafeBuffer.class),
-            eq(Header.LENGTH),
+            eq(DataHeaderFlyweight.HEADER_LENGTH),
             eq(BitUtil.SIZE_OF_INT),
             any(Header.class));
     }
@@ -140,6 +147,9 @@ public class PongTest
     public void pingHandler(final DirectBuffer buffer, final int offset, final int length, final Header header)
     {
         // echoes back the ping
-        assertTrue(pongPublication.offer(buffer, offset, length));
+        while (pongPublication.offer(buffer, offset, length) < 0L)
+        {
+            Thread.yield();
+        }
     }
 }

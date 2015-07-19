@@ -15,36 +15,33 @@
  */
 package uk.co.real_logic.aeron.driver;
 
-import uk.co.real_logic.agrona.status.PositionIndicator;
+import uk.co.real_logic.agrona.concurrent.status.Position;
 
 /**
- * Consumption position a subscriber has got to within a {@link DriverSubscription}.
+ * Consumption position a subscriber has got to within a {@link SubscriptionLink}.
  */
 public final class SubscriberPosition
 {
-    private final DriverSubscription subscription;
-    private final int positionCounterId;
-    private final PositionIndicator positionIndicator;
+    private final SubscriptionLink subscription;
+    private final Position position;
 
-    public SubscriberPosition(
-        final DriverSubscription subscription, final int positionCounterId, final PositionIndicator positionIndicator)
+    public SubscriberPosition(final SubscriptionLink subscription, final Position position)
     {
         this.subscription = subscription;
-        this.positionCounterId = positionCounterId;
-        this.positionIndicator = positionIndicator;
+        this.position = position;
     }
 
-    public PositionIndicator positionIndicator()
+    public Position position()
     {
-        return positionIndicator;
+        return position;
     }
 
     public int positionCounterId()
     {
-        return positionCounterId;
+        return position().id();
     }
 
-    public DriverSubscription subscription()
+    public SubscriptionLink subscription()
     {
         return subscription;
     }

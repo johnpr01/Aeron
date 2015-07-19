@@ -15,8 +15,7 @@
  */
 package uk.co.real_logic.aeron;
 
-import uk.co.real_logic.aeron.common.ErrorCode;
-import uk.co.real_logic.aeron.common.command.ConnectionBuffersReadyFlyweight;
+import uk.co.real_logic.aeron.command.ConnectionBuffersReadyFlyweight;
 
 /**
  * Callback interface for receiving messages from the driver.
@@ -27,28 +26,26 @@ interface DriverListener
         String channel,
         int streamId,
         int sessionId,
-        int positionIndicatorId,
-        int mtuLength,
+        int publicationLimitId,
         String logFileName,
         long correlationId);
 
     void onNewConnection(
-        String channel,
         int streamId,
         int sessionId,
-        int termId,
         long initialPosition,
         String logFileName,
         ConnectionBuffersReadyFlyweight message,
         long correlationId);
 
     void onInactiveConnection(
-        String channel,
         int streamId,
         int sessionId,
+        long position,
         long correlationId);
 
-    void onError(ErrorCode errorCode, String message);
-
-    void operationSucceeded();
+    void onError(
+        ErrorCode errorCode,
+        String message,
+        long correlationId);
 }

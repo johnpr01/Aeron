@@ -15,14 +15,17 @@
  */
 package uk.co.real_logic.aeron.driver;
 
-import uk.co.real_logic.aeron.common.*;
-import uk.co.real_logic.aeron.common.concurrent.SigIntBarrier;
-import uk.co.real_logic.aeron.common.event.EventConfiguration;
-import uk.co.real_logic.aeron.common.event.EventLogger;
+import uk.co.real_logic.aeron.CncFileDescriptor;
+import uk.co.real_logic.aeron.CommonContext;
 import uk.co.real_logic.aeron.driver.buffer.RawLogFactory;
 import uk.co.real_logic.aeron.driver.cmd.DriverConductorCmd;
 import uk.co.real_logic.aeron.driver.cmd.ReceiverCmd;
 import uk.co.real_logic.aeron.driver.cmd.SenderCmd;
+import uk.co.real_logic.aeron.driver.event.EventConfiguration;
+import uk.co.real_logic.aeron.driver.event.EventLogger;
+import uk.co.real_logic.aeron.driver.exceptions.ConfigurationException;
+import uk.co.real_logic.aeron.driver.media.TransportPoller;
+import uk.co.real_logic.agrona.ErrorHandler;
 import uk.co.real_logic.agrona.IoUtil;
 import uk.co.real_logic.agrona.LangUtil;
 import uk.co.real_logic.agrona.TimerWheel;
@@ -32,22 +35,26 @@ import uk.co.real_logic.agrona.concurrent.ringbuffer.ManyToOneRingBuffer;
 import uk.co.real_logic.agrona.concurrent.ringbuffer.RingBuffer;
 
 import java.io.File;
+import java.io.IOException;
+import java.net.StandardSocketOptions;
 import java.nio.ByteBuffer;
 import java.nio.MappedByteBuffer;
+import java.nio.channels.DatagramChannel;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 
-import static java.lang.Integer.getInteger;
+import static java.lang.Boolean.getBoolean;
 import static uk.co.real_logic.aeron.driver.Configuration.*;
 import static uk.co.real_logic.agrona.IoUtil.deleteIfExists;
 import static uk.co.real_logic.agrona.IoUtil.mapNewFile;
 
 /**
  * Main class for JVM-based media driver
- *
+ * <p>
  * Usage:
  * <code>
  * $ java -jar aeron-driver.jar
@@ -59,12 +66,17 @@ import static uk.co.real_logic.agrona.IoUtil.mapNewFile;
  * <li><code>aeron.command.buffer.length</code>: Use int value as length of the command buffers between threads.</li>
  * <li><code>aeron.conductor.buffer.length</code>: Use int value as length of the conductor buffers between the media
  * driver and the client.</li>
+ * <li><code>aeron.dir.delete.on.exit</code>: Attempt to delete Aeron directories on exit.</li>
  * </ul>
  */
 public final class MediaDriver implements AutoCloseable
 {
-    private final File adminDirectory;
-    private final File dataDirectory;
+    /**
+     * Attempt to delete directories on exit
+     */
+    public static final String DIRS_DELETE_ON_EXIT_PROP_NAME = "aeron.dir.delete.on.exit";
+
+    private final File parentDirectory;
     private final List<AgentRunner> runners;
     private final Context ctx;
 
@@ -92,18 +104,20 @@ public final class MediaDriver implements AutoCloseable
     {
         this.ctx = ctx;
 
-        adminDirectory = new File(ctx.adminDirName());
-        dataDirectory = new File(ctx.dataDirName());
+        parentDirectory = new File(ctx.dirName());
 
         ensureDirectoriesAreRecreated();
 
-        ctx.unicastSenderFlowControl(Configuration::unicastSenderFlowControlStrategy)
-           .multicastSenderFlowControl(Configuration::multicastSenderFlowControlStrategy)
-           .conductorTimerWheel(Configuration.newConductorTimerWheel())
-           .conductorCommandQueue(new OneToOneConcurrentArrayQueue<>(Configuration.CMD_QUEUE_CAPACITY))
-           .receiverCommandQueue(new OneToOneConcurrentArrayQueue<>(Configuration.CMD_QUEUE_CAPACITY))
-           .senderCommandQueue(new OneToOneConcurrentArrayQueue<>(Configuration.CMD_QUEUE_CAPACITY))
-           .conclude();
+        validateSufficientSocketBufferLengths(ctx);
+
+        ctx.unicastSenderFlowControl(Configuration::unicastFlowControlStrategy)
+            .multicastSenderFlowControl(Configuration::multicastFlowControlStrategy)
+            .conductorTimerWheel(Configuration.newConductorTimerWheel())
+            .toConductorFromReceiverCommandQueue(new OneToOneConcurrentArrayQueue<>(Configuration.CMD_QUEUE_CAPACITY))
+            .toConductorFromSenderCommandQueue(new OneToOneConcurrentArrayQueue<>(Configuration.CMD_QUEUE_CAPACITY))
+            .receiverCommandQueue(new OneToOneConcurrentArrayQueue<>(Configuration.CMD_QUEUE_CAPACITY))
+            .senderCommandQueue(new OneToOneConcurrentArrayQueue<>(Configuration.CMD_QUEUE_CAPACITY))
+            .conclude();
 
         final AtomicCounter driverExceptions = ctx.systemCounters().driverExceptions();
 
@@ -113,35 +127,63 @@ public final class MediaDriver implements AutoCloseable
 
         ctx.receiverProxy().receiver(receiver);
         ctx.senderProxy().sender(sender);
-        ctx.driverConductorProxy().driverConductor(driverConductor);
+        ctx.fromReceiverDriverConductorProxy().driverConductor(driverConductor);
+        ctx.fromSenderDriverConductorProxy().driverConductor(driverConductor);
+
+        ctx.toDriverCommands().consumerHeartbeatTime(ctx.epochClock().time());
 
         switch (ctx.threadingMode)
         {
             case SHARED:
-                runners = Arrays.asList(
-                    new AgentRunner(ctx.sharedIdleStrategy, ctx.exceptionConsumer(), driverExceptions,
-                                    new CompositeAgent(sender, new CompositeAgent(receiver, driverConductor)))
+                runners = Collections.singletonList(
+                    new AgentRunner(ctx.sharedIdleStrategy, ctx.errorHandler(), driverExceptions,
+                        new CompositeAgent(sender, new CompositeAgent(receiver, driverConductor)))
                 );
                 break;
 
             case SHARED_NETWORK:
                 runners = Arrays.asList(
-                    new AgentRunner(ctx.sharedNetworkIdleStrategy, ctx.exceptionConsumer(), driverExceptions,
-                                    new CompositeAgent(sender, receiver)),
-                    new AgentRunner(ctx.conductorIdleStrategy, ctx.exceptionConsumer(), driverExceptions, driverConductor)
+                    new AgentRunner(ctx.sharedNetworkIdleStrategy, ctx.errorHandler(), driverExceptions,
+                        new CompositeAgent(sender, receiver)),
+                    new AgentRunner(ctx.conductorIdleStrategy, ctx.errorHandler(), driverExceptions, driverConductor)
                 );
                 break;
 
             default:
             case DEDICATED:
                 runners = Arrays.asList(
-                    new AgentRunner(ctx.senderIdleStrategy, ctx.exceptionConsumer(), driverExceptions, sender),
-                    new AgentRunner(ctx.receiverIdleStrategy, ctx.exceptionConsumer(), driverExceptions, receiver),
-                    new AgentRunner(ctx.conductorIdleStrategy, ctx.exceptionConsumer(), driverExceptions, driverConductor)
+                    new AgentRunner(ctx.senderIdleStrategy, ctx.errorHandler(), driverExceptions, sender),
+                    new AgentRunner(ctx.receiverIdleStrategy, ctx.errorHandler(), driverExceptions, receiver),
+                    new AgentRunner(ctx.conductorIdleStrategy, ctx.errorHandler(), driverExceptions, driverConductor)
                 );
                 break;
         }
 
+    }
+
+    /**
+     * Launch an isolated MediaDriver embedded in the current process with a generated dirName that can be retrieved
+     * by calling contextDirName.
+     *
+     * @return the newly started MediaDriver.
+     */
+    public static MediaDriver launchEmbedded()
+    {
+        final Context ctx = new Context();
+        return launchEmbedded(ctx);
+    }
+
+    /**
+     * Launch an isolated MediaDriver embedded in the current process with a provided configuration context and
+     * a generated dirName (overwrites configured dirName) that can be retrieved by calling contextDirName.
+     *
+     * @param ctx containing the configuration options.
+     * @return the newly started MediaDriver.
+     */
+    public static MediaDriver launchEmbedded(final Context ctx)
+    {
+        ctx.dirName(CommonContext.generateEmbeddedDirName());
+        return launch(ctx);
     }
 
     /**
@@ -185,10 +227,20 @@ public final class MediaDriver implements AutoCloseable
         }
     }
 
+    /**
+     * Used to access the configured dirName for this MediaDriver Context typically after the launchIsolated method
+     *
+     * @return the context dirName
+     */
+    public String contextDirName()
+    {
+        return ctx.dirName();
+    }
+
     private void freeSocketsForReuseOnWindows()
     {
         ctx.receiverNioSelector().selectNowWithoutProcessing();
-        ctx.conductorNioSelector().selectNowWithoutProcessing();
+        ctx.senderNioSelector().selectNowWithoutProcessing();
     }
 
     private MediaDriver start()
@@ -204,6 +256,49 @@ public final class MediaDriver implements AutoCloseable
         return this;
     }
 
+    private static void validateSufficientSocketBufferLengths(final Context ctx)
+    {
+        try (final DatagramChannel probe = DatagramChannel.open())
+        {
+            final int defaultSoSndbuf = probe.getOption(StandardSocketOptions.SO_SNDBUF);
+
+            probe.setOption(StandardSocketOptions.SO_SNDBUF, Integer.MAX_VALUE);
+            final int maxSoSndbuf = probe.getOption(StandardSocketOptions.SO_SNDBUF);
+
+            if (maxSoSndbuf < Configuration.SOCKET_SNDBUF_LENGTH)
+            {
+                System.err.format(
+                    "WARNING: Could not get desired SO_SNDBUF: attempted=%d, actual=%d\n",
+                    Configuration.SOCKET_SNDBUF_LENGTH, maxSoSndbuf);
+            }
+
+            probe.setOption(StandardSocketOptions.SO_RCVBUF, Integer.MAX_VALUE);
+            final int maxSoRcvbuf = probe.getOption(StandardSocketOptions.SO_RCVBUF);
+
+            if (maxSoRcvbuf < Configuration.SOCKET_RCVBUF_LENGTH)
+            {
+                System.err.format(
+                    "WARNING: Could not get desired SO_RCVBUF: attempted=%d, actual=%d\n",
+                    Configuration.SOCKET_RCVBUF_LENGTH, maxSoRcvbuf);
+            }
+
+            final int soSndbuf =
+                (0 == Configuration.SOCKET_SNDBUF_LENGTH) ? defaultSoSndbuf : Configuration.SOCKET_SNDBUF_LENGTH;
+
+            if (ctx.mtuLength() > soSndbuf)
+            {
+                throw new ConfigurationException(
+                    String.format(
+                        "MTU greater than socket SO_SNDBUF: mtuLength=%d, SO_SNDBUF=%d", ctx.mtuLength(), soSndbuf));
+            }
+        }
+        catch (final IOException ex)
+        {
+            throw new RuntimeException(
+                String.format("probe socket: %s", ex.toString()), ex);
+        }
+    }
+
     private void ensureDirectoriesAreRecreated()
     {
         final BiConsumer<String, String> callback =
@@ -215,16 +310,14 @@ public final class MediaDriver implements AutoCloseable
                 }
             };
 
-        IoUtil.ensureDirectoryIsRecreated(adminDirectory, "conductor", callback);
-        IoUtil.ensureDirectoryIsRecreated(dataDirectory, "data", callback);
+        IoUtil.ensureDirectoryIsRecreated(parentDirectory, "aeron", callback);
     }
 
     private void deleteDirectories() throws Exception
     {
         if (ctx.dirsDeleteOnExit())
         {
-            IoUtil.delete(adminDirectory, false);
-            IoUtil.delete(dataDirectory, false);
+            IoUtil.delete(parentDirectory, false);
         }
     }
 
@@ -232,16 +325,19 @@ public final class MediaDriver implements AutoCloseable
     {
         private RawLogFactory rawLogFactory;
         private TransportPoller receiverTransportPoller;
-        private TransportPoller conductorTransportPoller;
-        private Supplier<SenderFlowControl> unicastSenderFlowControl;
-        private Supplier<SenderFlowControl> multicastSenderFlowControl;
+        private TransportPoller senderTransportPoller;
+        private Supplier<FlowControl> unicastSenderFlowControl;
+        private Supplier<FlowControl> multicastSenderFlowControl;
+        private EpochClock epochClock;
         private TimerWheel conductorTimerWheel;
-        private OneToOneConcurrentArrayQueue<DriverConductorCmd> conductorCommandQueue;
+        private OneToOneConcurrentArrayQueue<DriverConductorCmd> toConductorFromReceiverCommandQueue;
+        private OneToOneConcurrentArrayQueue<DriverConductorCmd> toConductorFromSenderCommandQueue;
         private OneToOneConcurrentArrayQueue<ReceiverCmd> receiverCommandQueue;
         private OneToOneConcurrentArrayQueue<SenderCmd> senderCommandQueue;
         private ReceiverProxy receiverProxy;
         private SenderProxy senderProxy;
-        private DriverConductorProxy driverConductorProxy;
+        private DriverConductorProxy fromReceiverDriverConductorProxy;
+        private DriverConductorProxy fromSenderDriverConductorProxy;
         private IdleStrategy conductorIdleStrategy;
         private IdleStrategy senderIdleStrategy;
         private IdleStrategy receiverIdleStrategy;
@@ -272,6 +368,10 @@ public final class MediaDriver implements AutoCloseable
         private EventLogger eventLogger;
         private Consumer<String> eventConsumer;
         private ThreadingMode threadingMode;
+        private boolean dirsDeleteOnExit;
+
+        private LossGenerator dataLossGenerator;
+        private LossGenerator controlLossGenerator;
 
         public Context()
         {
@@ -283,11 +383,14 @@ public final class MediaDriver implements AutoCloseable
             dataLossSeed(Configuration.dataLossSeed());
             controlLossRate(Configuration.controlLossRate());
             controlLossSeed(Configuration.controlLossSeed());
+            mtuLength(Configuration.MTU_LENGTH);
 
             eventConsumer = System.out::println;
             eventBufferLength = EventConfiguration.bufferLength();
 
             warnIfDirectoriesExist = true;
+
+            dirsDeleteOnExit(getBoolean(DIRS_DELETE_ON_EXIT_PROP_NAME));
         }
 
         public Context conclude()
@@ -296,14 +399,17 @@ public final class MediaDriver implements AutoCloseable
 
             try
             {
+                if (null == epochClock)
+                {
+                    epochClock = new SystemEpochClock();
+                }
+
                 if (threadingMode == null)
                 {
                     threadingMode = Configuration.threadingMode();
                 }
 
-                mtuLength(getInteger(MTU_LENGTH_PROP_NAME, MTU_LENGTH_DEFAULT));
-
-                final ByteBuffer eventByteBuffer = ByteBuffer.allocate(eventBufferLength);
+                final ByteBuffer eventByteBuffer = ByteBuffer.allocateDirect(eventBufferLength);
 
                 if (null == eventLogger)
                 {
@@ -313,7 +419,7 @@ public final class MediaDriver implements AutoCloseable
                 toEventReader(new ManyToOneRingBuffer(new UnsafeBuffer(eventByteBuffer)));
 
                 receiverNioSelector(new TransportPoller());
-                conductorNioSelector(new TransportPoller());
+                senderNioSelector(new TransportPoller());
 
                 Configuration.validateTermBufferLength(termBufferLength());
                 Configuration.validateInitialWindowLength(initialWindowLength(), mtuLength());
@@ -329,15 +435,15 @@ public final class MediaDriver implements AutoCloseable
                     cncFile(),
                     CncFileDescriptor.computeCncFileLength(
                         CONDUCTOR_BUFFER_LENGTH + TO_CLIENTS_BUFFER_LENGTH +
-                            COUNTER_BUFFERS_LENGTH + COUNTER_BUFFERS_LENGTH));
+                            COUNTER_LABELS_BUFFER_LENGTH + COUNTER_VALUES_BUFFER_LENGTH));
 
                 cncMetaDataBuffer = CncFileDescriptor.createMetaDataBuffer(cncByteBuffer);
                 CncFileDescriptor.fillMetaData(
                     cncMetaDataBuffer,
                     CONDUCTOR_BUFFER_LENGTH,
                     TO_CLIENTS_BUFFER_LENGTH,
-                    COUNTER_BUFFERS_LENGTH,
-                    COUNTER_BUFFERS_LENGTH);
+                    COUNTER_LABELS_BUFFER_LENGTH,
+                    COUNTER_VALUES_BUFFER_LENGTH);
 
                 final BroadcastTransmitter transmitter =
                     new BroadcastTransmitter(CncFileDescriptor.createToClientsBuffer(cncByteBuffer, cncMetaDataBuffer));
@@ -349,15 +455,19 @@ public final class MediaDriver implements AutoCloseable
 
                 concludeCounters();
 
-                receiverProxy(new ReceiverProxy(threadingMode, receiverCommandQueue(), systemCounters.receiverProxyFails()));
+                receiverProxy(new ReceiverProxy(
+                    threadingMode, receiverCommandQueue(), systemCounters.receiverProxyFails()));
                 senderProxy(new SenderProxy(threadingMode, senderCommandQueue(), systemCounters.senderProxyFails()));
-                driverConductorProxy(new DriverConductorProxy(
-                    threadingMode, conductorCommandQueue, systemCounters.conductorProxyFails()));
+                fromReceiverDriverConductorProxy(new DriverConductorProxy(
+                    threadingMode, toConductorFromReceiverCommandQueue, systemCounters.conductorProxyFails()));
+                fromSenderDriverConductorProxy(new DriverConductorProxy(
+                    threadingMode, toConductorFromSenderCommandQueue, systemCounters.conductorProxyFails()));
 
                 rawLogBuffersFactory(new RawLogFactory(
-                    dataDirName(), publicationTermBufferLength, maxConnectionTermBufferLength, eventLogger));
+                    dirName(), publicationTermBufferLength, maxConnectionTermBufferLength, eventLogger));
 
                 concludeIdleStrategies();
+                concludeLossGenerators();
             }
             catch (final Exception ex)
             {
@@ -367,9 +477,23 @@ public final class MediaDriver implements AutoCloseable
             return this;
         }
 
-        public Context conductorCommandQueue(final OneToOneConcurrentArrayQueue<DriverConductorCmd> conductorCommandQueue)
+        public Context epochClock(final EpochClock clock)
         {
-            this.conductorCommandQueue = conductorCommandQueue;
+            this.epochClock = clock;
+            return this;
+        }
+
+        public Context toConductorFromReceiverCommandQueue(
+            final OneToOneConcurrentArrayQueue<DriverConductorCmd> conductorCommandQueue)
+        {
+            this.toConductorFromReceiverCommandQueue = conductorCommandQueue;
+            return this;
+        }
+
+        public Context toConductorFromSenderCommandQueue(
+            final OneToOneConcurrentArrayQueue<DriverConductorCmd> conductorCommandQueue)
+        {
+            this.toConductorFromSenderCommandQueue = conductorCommandQueue;
             return this;
         }
 
@@ -385,19 +509,19 @@ public final class MediaDriver implements AutoCloseable
             return this;
         }
 
-        public Context conductorNioSelector(final TransportPoller transportPoller)
+        public Context senderNioSelector(final TransportPoller transportPoller)
         {
-            this.conductorTransportPoller = transportPoller;
+            this.senderTransportPoller = transportPoller;
             return this;
         }
 
-        public Context unicastSenderFlowControl(final Supplier<SenderFlowControl> senderFlowControl)
+        public Context unicastSenderFlowControl(final Supplier<FlowControl> senderFlowControl)
         {
             this.unicastSenderFlowControl = senderFlowControl;
             return this;
         }
 
-        public Context multicastSenderFlowControl(final Supplier<SenderFlowControl> senderFlowControl)
+        public Context multicastSenderFlowControl(final Supplier<FlowControl> senderFlowControl)
         {
             this.multicastSenderFlowControl = senderFlowControl;
             return this;
@@ -433,9 +557,15 @@ public final class MediaDriver implements AutoCloseable
             return this;
         }
 
-        public Context driverConductorProxy(final DriverConductorProxy driverConductorProxy)
+        public Context fromReceiverDriverConductorProxy(final DriverConductorProxy driverConductorProxy)
         {
-            this.driverConductorProxy = driverConductorProxy;
+            this.fromReceiverDriverConductorProxy = driverConductorProxy;
+            return this;
+        }
+
+        public Context fromSenderDriverConductorProxy(final DriverConductorProxy driverConductorProxy)
+        {
+            this.fromSenderDriverConductorProxy = driverConductorProxy;
             return this;
         }
 
@@ -577,9 +707,43 @@ public final class MediaDriver implements AutoCloseable
             return this;
         }
 
-        public OneToOneConcurrentArrayQueue<DriverConductorCmd> conductorCommandQueue()
+        public Context dataLossGenerator(final LossGenerator generator)
         {
-            return conductorCommandQueue;
+            this.dataLossGenerator = generator;
+            return this;
+        }
+
+        public Context controlLossGenerator(final LossGenerator generator)
+        {
+            this.controlLossGenerator = generator;
+            return this;
+        }
+
+        /**
+         * Set whether or not this application will attempt to delete the Aeron directories when exiting.
+         *
+         * @param dirsDeleteOnExit Attempt deletion.
+         * @return this Object for method chaining.
+         */
+        public Context dirsDeleteOnExit(final boolean dirsDeleteOnExit)
+        {
+            this.dirsDeleteOnExit = dirsDeleteOnExit;
+            return this;
+        }
+
+        public EpochClock epochClock()
+        {
+            return epochClock;
+        }
+
+        public OneToOneConcurrentArrayQueue<DriverConductorCmd> toConductorFromReceiverCommandQueue()
+        {
+            return toConductorFromReceiverCommandQueue;
+        }
+
+        public OneToOneConcurrentArrayQueue<DriverConductorCmd> toConductorFromSenderCommandQueue()
+        {
+            return toConductorFromSenderCommandQueue;
         }
 
         public RawLogFactory rawLogBuffersFactory()
@@ -592,17 +756,17 @@ public final class MediaDriver implements AutoCloseable
             return receiverTransportPoller;
         }
 
-        public TransportPoller conductorNioSelector()
+        public TransportPoller senderNioSelector()
         {
-            return conductorTransportPoller;
+            return senderTransportPoller;
         }
 
-        public Supplier<SenderFlowControl> unicastSenderFlowControl()
+        public Supplier<FlowControl> unicastSenderFlowControl()
         {
             return unicastSenderFlowControl;
         }
 
-        public Supplier<SenderFlowControl> multicastSenderFlowControl()
+        public Supplier<FlowControl> multicastSenderFlowControl()
         {
             return multicastSenderFlowControl;
         }
@@ -632,9 +796,14 @@ public final class MediaDriver implements AutoCloseable
             return senderProxy;
         }
 
-        public DriverConductorProxy driverConductorProxy()
+        public DriverConductorProxy fromReceiverDriverConductorProxy()
         {
-            return driverConductorProxy;
+            return fromReceiverDriverConductorProxy;
+        }
+
+        public DriverConductorProxy fromSenderDriverConductorProxy()
+        {
+            return fromSenderDriverConductorProxy;
         }
 
         public IdleStrategy conductorIdleStrategy()
@@ -707,7 +876,7 @@ public final class MediaDriver implements AutoCloseable
             return eventLogger;
         }
 
-        public Consumer<Throwable> exceptionConsumer()
+        public ErrorHandler errorHandler()
         {
             return eventLogger::logException;
         }
@@ -737,6 +906,16 @@ public final class MediaDriver implements AutoCloseable
             return mtuLength;
         }
 
+        public LossGenerator dataLossGenerator()
+        {
+            return dataLossGenerator;
+        }
+
+        public LossGenerator controlLossGenerator()
+        {
+            return controlLossGenerator;
+        }
+
         public CommonContext mtuLength(final int mtuLength)
         {
             this.mtuLength = mtuLength;
@@ -746,6 +925,16 @@ public final class MediaDriver implements AutoCloseable
         public SystemCounters systemCounters()
         {
             return systemCounters;
+        }
+
+        /**
+         * Get whether or not this application will attempt to delete the Aeron directories when exiting.
+         *
+         * @return true when directories will be deleted, otherwise false.
+         */
+        public boolean dirsDeleteOnExit()
+        {
+            return dirsDeleteOnExit;
         }
 
         public Consumer<String> eventConsumer()
@@ -823,6 +1012,19 @@ public final class MediaDriver implements AutoCloseable
             if (null == sharedIdleStrategy)
             {
                 sharedIdleStrategy(Configuration.agentIdleStrategy());
+            }
+        }
+
+        private void concludeLossGenerators()
+        {
+            if (null == dataLossGenerator)
+            {
+                dataLossGenerator(Configuration.createLossGenerator(dataLossRate, dataLossSeed));
+            }
+
+            if (null == controlLossGenerator)
+            {
+                controlLossGenerator(Configuration.createLossGenerator(controlLossRate, controlLossSeed));
             }
         }
     }

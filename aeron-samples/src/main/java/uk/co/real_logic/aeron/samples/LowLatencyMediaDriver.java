@@ -15,23 +15,22 @@
  */
 package uk.co.real_logic.aeron.samples;
 
-import uk.co.real_logic.aeron.common.concurrent.SigIntBarrier;
 import uk.co.real_logic.aeron.driver.MediaDriver;
 import uk.co.real_logic.aeron.driver.ThreadingMode;
 import uk.co.real_logic.agrona.concurrent.BackoffIdleStrategy;
 import uk.co.real_logic.agrona.concurrent.NoOpIdleStrategy;
+import uk.co.real_logic.agrona.concurrent.SigIntBarrier;
 
+/**
+ * Sample setup for a {@link MediaDriver} that is configured for low latency communications.
+ */
 public class LowLatencyMediaDriver
 {
     public static void main(final String[] args) throws Exception
     {
-        SamplesUtil.useSharedMemoryOnLinux();
-
         final MediaDriver.Context ctx = new MediaDriver.Context()
             .threadingMode(ThreadingMode.DEDICATED)
             .conductorIdleStrategy(new BackoffIdleStrategy(1, 1, 1, 1))
-            .sharedNetworkIdleStrategy(new NoOpIdleStrategy())
-            .sharedIdleStrategy(new NoOpIdleStrategy())
             .receiverIdleStrategy(new NoOpIdleStrategy())
             .senderIdleStrategy(new NoOpIdleStrategy());
 

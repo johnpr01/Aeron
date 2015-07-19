@@ -15,10 +15,11 @@
  */
 package uk.co.real_logic.aeron.driver;
 
-import uk.co.real_logic.agrona.concurrent.AtomicCounter;
+import uk.co.real_logic.aeron.driver.cmd.CloseResourceCmd;
 import uk.co.real_logic.aeron.driver.cmd.CreateConnectionCmd;
 import uk.co.real_logic.aeron.driver.cmd.DriverConductorCmd;
-import uk.co.real_logic.aeron.driver.cmd.ElicitSetupFromSourceCmd;
+import uk.co.real_logic.aeron.driver.media.ReceiveChannelEndpoint;
+import uk.co.real_logic.agrona.concurrent.AtomicCounter;
 
 import java.net.InetSocketAddress;
 import java.util.Queue;
@@ -91,20 +92,15 @@ public class DriverConductorProxy
         }
     }
 
-    public void elicitSetupFromSource(
-        final int sessionId,
-        final int streamId,
-        final InetSocketAddress controlAddress,
-        final ReceiveChannelEndpoint channelEndpoint)
+    public void closeResource(final AutoCloseable resource)
     {
-        final ElicitSetupFromSourceCmd cmd = new ElicitSetupFromSourceCmd(sessionId, streamId, controlAddress, channelEndpoint);
         if (isShared())
         {
-            driverConductor.onElicitSetupFromSender(cmd);
+            driverConductor.onCloseResource(resource);
         }
         else
         {
-            offer(cmd);
+            offer(new CloseResourceCmd(resource));
         }
     }
 

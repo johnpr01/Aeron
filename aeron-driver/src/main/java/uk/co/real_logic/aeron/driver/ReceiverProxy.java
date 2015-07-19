@@ -15,15 +15,16 @@
  */
 package uk.co.real_logic.aeron.driver;
 
-import uk.co.real_logic.agrona.concurrent.AtomicCounter;
 import uk.co.real_logic.aeron.driver.cmd.*;
+import uk.co.real_logic.aeron.driver.media.ReceiveChannelEndpoint;
+import uk.co.real_logic.agrona.concurrent.AtomicCounter;
 
 import java.util.Queue;
 
 import static uk.co.real_logic.aeron.driver.ThreadingMode.SHARED;
 
 /**
- * Proxy for offering into the Receiver Thread's command queue.
+ * Proxy for offering into the {@link Receiver} Thread's command queue.
  */
 public class ReceiverProxy
 {
@@ -43,6 +44,11 @@ public class ReceiverProxy
     public void receiver(final Receiver receiver)
     {
         this.receiver = receiver;
+    }
+
+    public Receiver receiver()
+    {
+        return receiver;
     }
 
     public void addSubscription(final ReceiveChannelEndpoint mediaEndpoint, final int streamId)
@@ -69,7 +75,7 @@ public class ReceiverProxy
         }
     }
 
-    public void newConnection(final ReceiveChannelEndpoint channelEndpoint, final DriverConnection connection)
+    public void newConnection(final ReceiveChannelEndpoint channelEndpoint, final NetworkConnection connection)
     {
         if (isSharedThread())
         {
@@ -81,23 +87,11 @@ public class ReceiverProxy
         }
     }
 
-    public void removeConnection(final DriverConnection connection)
+    public void registerReceiveChannelEndpoint(final ReceiveChannelEndpoint channelEndpoint)
     {
         if (isSharedThread())
         {
-            receiver.onRemoveConnection(connection);
-        }
-        else
-        {
-            offer(new RemoveConnectionCmd(connection));
-        }
-    }
-
-    public void registerMediaEndpoint(final ReceiveChannelEndpoint channelEndpoint)
-    {
-        if (isSharedThread())
-        {
-            receiver.onRegisterMediaChannelEndpoint(channelEndpoint);
+            receiver.onRegisterReceiveChannelEndpoint(channelEndpoint);
         }
         else
         {
@@ -114,18 +108,6 @@ public class ReceiverProxy
         else
         {
             offer(new CloseReceiveChannelEndpointCmd(channelEndpoint));
-        }
-    }
-
-    public void removePendingSetup(final ReceiveChannelEndpoint channelEndpoint, final int sessionId, final int streamId)
-    {
-        if (isSharedThread())
-        {
-            receiver.onRemovePendingSetup(channelEndpoint, sessionId, streamId);
-        }
-        else
-        {
-            offer(new RemovePendingSetupCmd(channelEndpoint, sessionId, streamId));
         }
     }
 

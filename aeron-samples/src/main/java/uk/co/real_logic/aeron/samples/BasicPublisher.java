@@ -17,15 +17,23 @@ package uk.co.real_logic.aeron.samples;
 
 import uk.co.real_logic.aeron.Aeron;
 import uk.co.real_logic.aeron.Publication;
+import uk.co.real_logic.aeron.driver.MediaDriver;
 import uk.co.real_logic.agrona.CloseHelper;
 import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
-import uk.co.real_logic.aeron.driver.MediaDriver;
 
 import java.nio.ByteBuffer;
 import java.util.concurrent.TimeUnit;
 
 /**
  * Basic Aeron publisher application
+ * This publisher sends a fixed number of fixed-length messages
+ * on a channel and stream ID, then lingers to allow any consumers
+ * that may have experienced loss a chance to NAK for and recover
+ * any missing data.
+ * The default values for number of messages, channel, and stream ID are
+ * defined in {@link SampleConfiguration} and can be overridden by
+ * setting their corresponding properties via the command-line; e.g.:
+ * -Daeron.sample.channel=udp://localhost:5555 -Daeron.sample.streamId=20
  */
 public class BasicPublisher
 {
@@ -33,7 +41,6 @@ public class BasicPublisher
     private static final String CHANNEL = SampleConfiguration.CHANNEL;
     private static final long NUMBER_OF_MESSAGES = SampleConfiguration.NUMBER_OF_MESSAGES;
     private static final long LINGER_TIMEOUT_MS = SampleConfiguration.LINGER_TIMEOUT_MS;
-
     private static final boolean EMBEDDED_MEDIA_DRIVER = SampleConfiguration.EMBEDDED_MEDIA_DRIVER;
     private static final UnsafeBuffer BUFFER = new UnsafeBuffer(ByteBuffer.allocateDirect(256));
 
@@ -41,11 +48,20 @@ public class BasicPublisher
     {
         System.out.println("Publishing to " + CHANNEL + " on stream Id " + STREAM_ID);
 
-        SamplesUtil.useSharedMemoryOnLinux();
+        // If configured to do so, create an embedded media driver within this application rather
+        // than relying on an external one.
+        final MediaDriver driver = EMBEDDED_MEDIA_DRIVER ? MediaDriver.launchEmbedded() : null;
 
-        final MediaDriver driver = EMBEDDED_MEDIA_DRIVER ? MediaDriver.launch() : null;
         final Aeron.Context ctx = new Aeron.Context();
+        if (EMBEDDED_MEDIA_DRIVER)
+        {
+            ctx.dirName(driver.contextDirName());
+        }
 
+        // Connect a new Aeron instance to the media driver and create a publication on
+        // the given channel and stream ID.
+        // The Aeron and Publication classes implement "AutoCloseable" and will automatically
+        // clean up resources when this try block is finished
         try (final Aeron aeron = Aeron.connect(ctx);
              final Publication publication = aeron.addPublication(CHANNEL, STREAM_ID))
         {
@@ -55,15 +71,27 @@ public class BasicPublisher
                 BUFFER.putBytes(0, message.getBytes());
 
                 System.out.print("offering " + i + "/" + NUMBER_OF_MESSAGES);
-                final boolean result = publication.offer(BUFFER, 0, message.getBytes().length);
 
-                if (!result)
+                final long result = publication.offer(BUFFER, 0, message.getBytes().length);
+
+                if (result < 0L)
                 {
-                    System.out.println(" ah?!");
+                    if (result == Publication.BACK_PRESSURED)
+                    {
+                        System.out.println("Offer failed due to back pressure");
+                    }
+                    else if (result == Publication.NOT_CONNECTED)
+                    {
+                        System.out.println("Offer failed because publisher is not yet connected to subscriber");
+                    }
+                    else
+                    {
+                        System.out.println("Offer failed due to unknown reason");
+                    }
                 }
                 else
                 {
-                    System.out.println(" yay!");
+                    System.out.println("yay!");
                 }
 
                 Thread.sleep(TimeUnit.SECONDS.toMillis(1));

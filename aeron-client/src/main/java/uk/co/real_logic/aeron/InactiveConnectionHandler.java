@@ -16,17 +16,18 @@
 package uk.co.real_logic.aeron;
 
 /**
- * Interface for delivery of inactive connection events to a {@link uk.co.real_logic.aeron.Subscription}
+ * Interface for delivery of inactive connection events to a {@link uk.co.real_logic.aeron.Subscription}.
  */
 @FunctionalInterface
 public interface InactiveConnectionHandler
 {
     /**
-     * Method called by Aeron to deliver notification that a source has gone inactive.
+     * Method called by Aeron to deliver notification that a Publisher has gone inactive.
      *
-     * @param channel of the inactive source
-     * @param streamId of the inactive stream
-     * @param sessionId of the inactive source
+     * @param channel   The channel of the inactive Publisher.
+     * @param streamId  The scope within the channel of the inactive Publisher.
+     * @param sessionId The instance identifier of the inactive Publisher.
+     * @param position  at which the connection when inactive.
      */
-    void onInactiveConnection(String channel, int streamId, int sessionId);
+    void onInactiveConnection(String channel, int streamId, int sessionId, long position);
 }

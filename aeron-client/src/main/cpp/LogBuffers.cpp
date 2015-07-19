@@ -14,13 +14,12 @@
  * limitations under the License.
  */
 
-#include <concurrent/logbuffer/LogBufferDescriptor.h>
-
 #include "LogBuffers.h"
 
-using namespace aeron::common::util;
-using namespace aeron::common::concurrent::logbuffer;
-using namespace aeron;
+namespace aeron {
+
+using namespace aeron::util;
+using namespace aeron::concurrent::logbuffer;
 
 #define MAX_SINGLE_MAPPING_SIZE (0x7FFFFFFF)
 
@@ -33,9 +32,9 @@ LogBuffers::LogBuffers(const char *filename)
     {
         m_memoryMappedFiles.push_back(MemoryMappedFile::mapExisting(filename));
 
-        const index_t metaDataSectionOffset = (index_t)(termLength * LogBufferDescriptor::PARTITION_COUNT);
+        const index_t metaDataSectionOffset = (index_t) (termLength * LogBufferDescriptor::PARTITION_COUNT);
 
-        std::uint8_t* basePtr = m_memoryMappedFiles[0]->getMemoryPtr();
+        std::uint8_t *basePtr = m_memoryMappedFiles[0]->getMemoryPtr();
 
         for (int i = 0; i < LogBufferDescriptor::PARTITION_COUNT; i++)
         {
@@ -47,35 +46,61 @@ LogBuffers::LogBuffers(const char *filename)
         }
 
         m_buffers[2 * LogBufferDescriptor::PARTITION_COUNT]
-            .wrap(basePtr + (logLength - LogBufferDescriptor::LOG_META_DATA_LENGTH), LogBufferDescriptor::LOG_META_DATA_LENGTH);
+            .wrap(basePtr + (logLength - LogBufferDescriptor::LOG_META_DATA_LENGTH),
+                LogBufferDescriptor::LOG_META_DATA_LENGTH);
     }
     else
     {
-        const std::int64_t metaDataSectionOffset = (index_t)(termLength * LogBufferDescriptor::PARTITION_COUNT);
-        const std::int64_t metaDataSectionLength = (index_t)(logLength - metaDataSectionOffset);
+        const std::int64_t metaDataSectionOffset = (index_t) (termLength * LogBufferDescriptor::PARTITION_COUNT);
+        const std::int64_t metaDataSectionLength = (index_t) (logLength - metaDataSectionOffset);
 
         // one single map for all meta data (terms and log)
-        m_memoryMappedFiles.push_back(MemoryMappedFile::mapExisting(filename, metaDataSectionOffset, metaDataSectionLength));
+        m_memoryMappedFiles.push_back(
+            MemoryMappedFile::mapExisting(filename, metaDataSectionOffset, metaDataSectionLength));
 
-        std::uint8_t* metaDataBasePtr = m_memoryMappedFiles[0]->getMemoryPtr();
+        std::uint8_t *metaDataBasePtr = m_memoryMappedFiles[0]->getMemoryPtr();
 
         for (int i = 0; i < LogBufferDescriptor::PARTITION_COUNT; i++)
         {
             // one map for each term
             m_memoryMappedFiles.push_back(MemoryMappedFile::mapExisting(filename, i * termLength, termLength));
 
-            std::uint8_t* basePtr = m_memoryMappedFiles[i + 1]->getMemoryPtr();
+            std::uint8_t *basePtr = m_memoryMappedFiles[i + 1]->getMemoryPtr();
 
-            m_buffers[i].wrap(basePtr + (i * termLength), termLength);
+            m_buffers[i].wrap(basePtr, termLength);
             m_buffers[i + LogBufferDescriptor::PARTITION_COUNT]
-                .wrap(metaDataBasePtr + (i * LogBufferDescriptor::TERM_META_DATA_LENGTH), LogBufferDescriptor::TERM_META_DATA_LENGTH);
+                .wrap(metaDataBasePtr + (i * LogBufferDescriptor::TERM_META_DATA_LENGTH),
+                    LogBufferDescriptor::TERM_META_DATA_LENGTH);
         }
 
         m_buffers[2 * LogBufferDescriptor::PARTITION_COUNT]
-            .wrap(metaDataBasePtr + (metaDataSectionLength - LogBufferDescriptor::LOG_META_DATA_LENGTH), LogBufferDescriptor::LOG_META_DATA_LENGTH);
+            .wrap(metaDataBasePtr + (metaDataSectionLength - LogBufferDescriptor::LOG_META_DATA_LENGTH),
+                LogBufferDescriptor::LOG_META_DATA_LENGTH);
     }
 }
 
+LogBuffers::LogBuffers(std::uint8_t *address, index_t length)
+{
+    const index_t termLength = (index_t)LogBufferDescriptor::computeTermLength(length);
+    const index_t metaDataSectionOffset = (index_t) (termLength * LogBufferDescriptor::PARTITION_COUNT);
+
+    for (int i = 0; i < LogBufferDescriptor::PARTITION_COUNT; i++)
+    {
+        const index_t metaDataOffset = metaDataSectionOffset + (i * LogBufferDescriptor::TERM_META_DATA_LENGTH);
+
+        m_buffers[i].wrap(address + (i * termLength), termLength);
+        m_buffers[i + LogBufferDescriptor::PARTITION_COUNT]
+            .wrap(address + metaDataOffset, LogBufferDescriptor::TERM_META_DATA_LENGTH);
+    }
+
+    m_buffers[2 * LogBufferDescriptor::PARTITION_COUNT]
+        .wrap(address + (length - LogBufferDescriptor::LOG_META_DATA_LENGTH),
+            LogBufferDescriptor::LOG_META_DATA_LENGTH);
+}
+
+
 LogBuffers::~LogBuffers()
 {
+}
+
 }

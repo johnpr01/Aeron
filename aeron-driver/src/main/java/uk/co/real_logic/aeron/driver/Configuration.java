@@ -15,11 +15,11 @@
  */
 package uk.co.real_logic.aeron.driver;
 
-import uk.co.real_logic.agrona.concurrent.BackoffIdleStrategy;
 import uk.co.real_logic.agrona.BitUtil;
-import uk.co.real_logic.agrona.concurrent.IdleStrategy;
-import uk.co.real_logic.agrona.TimerWheel;
 import uk.co.real_logic.agrona.LangUtil;
+import uk.co.real_logic.agrona.TimerWheel;
+import uk.co.real_logic.agrona.concurrent.BackoffIdleStrategy;
+import uk.co.real_logic.agrona.concurrent.IdleStrategy;
 import uk.co.real_logic.agrona.concurrent.broadcast.BroadcastBufferDescriptor;
 import uk.co.real_logic.agrona.concurrent.ringbuffer.RingBufferDescriptor;
 
@@ -28,7 +28,6 @@ import java.util.concurrent.TimeUnit;
 import static java.lang.Integer.getInteger;
 import static java.lang.Long.getLong;
 import static java.lang.System.getProperty;
-
 import static uk.co.real_logic.aeron.driver.ThreadingMode.DEDICATED;
 
 /**
@@ -39,7 +38,7 @@ public class Configuration
     /**
      * Byte buffer length (in bytes) for reads
      */
-    public static final String READ_BUFFER_LENGTH_PROP_NAME = "aeron.rcv.buffer.length";
+    public static final String RECEIVE_BUFFER_LENGTH_PROP_NAME = "aeron.rcv.buffer.length";
 
     /**
      * Length (in bytes) of the log buffers for publication terms
@@ -50,11 +49,6 @@ public class Configuration
      * Length (in bytes) of the log buffers for terms for incoming connections
      */
     public static final String TERM_BUFFER_MAX_LENGTH_PROP_NAME = "aeron.term.buffer.max.length";
-
-    /**
-     * Length (in bytes) of the command buffers between threads
-     */
-    public static final String COMMAND_BUFFER_LENGTH_PROP_NAME = "aeron.command.buffer.length";
 
     /**
      * Length (in bytes) of the conductor buffers between the media driver and the client
@@ -69,7 +63,7 @@ public class Configuration
     /**
      * Property name for length of the memory mapped buffers for the counters file
      */
-    public static final String COUNTER_BUFFERS_LENGTH_PROP_NAME = "aeron.dir.counters.length";
+    public static final String COUNTER_VALUES_BUFFER_LENGTH_PROP_NAME = "aeron.dir.counters.length";
 
     /**
      * Property name for length of the initial window
@@ -141,8 +135,9 @@ public class Configuration
     /**
      * Default byte buffer length for reads
      */
-    public static final int READ_BYTE_BUFFER_LENGTH_DEFAULT = 4096;
-    public static final int READ_BYTE_BUFFER_LENGTH = getInteger(READ_BUFFER_LENGTH_PROP_NAME, READ_BYTE_BUFFER_LENGTH_DEFAULT);
+    public static final int RECEIVE_BYTE_BUFFER_LENGTH_DEFAULT = 4096;
+    public static final int RECEIVE_BYTE_BUFFER_LENGTH = getInteger(
+        RECEIVE_BUFFER_LENGTH_PROP_NAME, RECEIVE_BYTE_BUFFER_LENGTH_DEFAULT);
 
     /**
      * Default term buffer length.
@@ -153,12 +148,6 @@ public class Configuration
      * Default term max buffer length.
      */
     public static final int TERM_BUFFER_LENGTH_MAX_DEFAULT = 16 * 1024 * 1024;
-
-    /**
-     * Default buffer length for command buffers between threads
-     */
-    public static final int COMMAND_BUFFER_LENGTH_DEFAULT = 1024 * 1024;
-    public static final int COMMAND_BUFFER_LENGTH = getInteger(COMMAND_BUFFER_LENGTH_PROP_NAME, COMMAND_BUFFER_LENGTH_DEFAULT);
 
     /**
      * Default buffer length for conductor buffers between the media driver and the client
@@ -177,8 +166,11 @@ public class Configuration
     /**
      * Length of the memory mapped buffers for the counters file
      */
-    public static final int COUNTERS_BUFFER_LENGTH_DEFAULT = 64 * 1024 * 1024;
-    public static final int COUNTER_BUFFERS_LENGTH = getInteger(COUNTER_BUFFERS_LENGTH_PROP_NAME, COUNTERS_BUFFER_LENGTH_DEFAULT);
+    public static final int COUNTER_VALUES_BUFFER_LENGTH_DEFAULT = 1024 * 1024;
+    public static final int COUNTER_VALUES_BUFFER_LENGTH = getInteger(
+        COUNTER_VALUES_BUFFER_LENGTH_PROP_NAME, COUNTER_VALUES_BUFFER_LENGTH_DEFAULT);
+
+    public static final int COUNTER_LABELS_BUFFER_LENGTH = COUNTER_VALUES_BUFFER_LENGTH;
 
     /**
      * Default group size estimate for NAK delay randomization
@@ -194,21 +186,42 @@ public class Configuration
      * Default max backoff for NAK delay randomization in msec
      */
     public static final long NAK_MAX_BACKOFF_DEFAULT = TimeUnit.MILLISECONDS.toNanos(60);
+    /**
+     * Multicast NAK delay is immediate initial with delayed subsequent delay
+     */
+    public static final OptimalMulticastDelayGenerator NAK_MULTICAST_DELAY_GENERATOR = new OptimalMulticastDelayGenerator(
+        Configuration.NAK_MAX_BACKOFF_DEFAULT, Configuration.NAK_GROUPSIZE_DEFAULT, Configuration.NAK_GRTT_DEFAULT);
 
     /**
      * Default Unicast NAK delay in nanoseconds
      */
     public static final long NAK_UNICAST_DELAY_DEFAULT_NS = TimeUnit.MILLISECONDS.toNanos(60);
+    /**
+     * Unicast NAK delay is immediate initial with delayed subsequent delay
+     */
+    public static final StaticDelayGenerator NAK_UNICAST_DELAY_GENERATOR = new StaticDelayGenerator(
+        Configuration.NAK_UNICAST_DELAY_DEFAULT_NS, true);
+
+    /**
+     * NAKs are effectively disabled.
+     */
+    public static final StaticDelayGenerator NO_NAK_DELAY_GENERATOR = new StaticDelayGenerator(
+            -1, false);
 
     /**
      * Default delay for retransmission of data for unicast
      */
-    public static final long RETRANS_UNICAST_DELAY_DEFAULT_NS = TimeUnit.NANOSECONDS.toNanos(0);
+    public static final long RETRANSMIT_UNICAST_DELAY_DEFAULT_NS = TimeUnit.NANOSECONDS.toNanos(0);
+    /**
+     * Source uses same for unicast and multicast. For ticks.
+     */
+    public static final FeedbackDelayGenerator RETRANSMIT_UNICAST_DELAY_GENERATOR = () -> RETRANSMIT_UNICAST_DELAY_DEFAULT_NS;
 
     /**
      * Default delay for linger for unicast
      */
-    public static final long RETRANS_UNICAST_LINGER_DEFAULT_NS = TimeUnit.MILLISECONDS.toNanos(60);
+    public static final long RETRANSMIT_UNICAST_LINGER_DEFAULT_NS = TimeUnit.MILLISECONDS.toNanos(60);
+    public static final FeedbackDelayGenerator RETRANSMIT_UNICAST_LINGER_GENERATOR = () -> RETRANSMIT_UNICAST_LINGER_DEFAULT_NS;
 
     /**
      * Default max number of active retransmissions per Term
@@ -297,30 +310,39 @@ public class Configuration
     public static final long PUBLICATION_SETUP_TIMEOUT_NS = TimeUnit.MILLISECONDS.toNanos(100);
 
     /** Timeout between heartbeats for publications */
-    public static final long PUBLICATION_HEARTBEAT_TIMEOUT_NS = TimeUnit.MILLISECONDS.toNanos(200);
+    public static final long PUBLICATION_HEARTBEAT_TIMEOUT_NS = TimeUnit.MILLISECONDS.toNanos(100);
 
     /**
-     * {@link SenderFlowControl} to be employed for unicast channels.
+     * {@link FlowControl} to be employed for unicast channels.
      */
-    public static final String SENDER_UNICAST_FLOW_CONTROL_STRATEGY_PROP_NAME =
-        "aeron.sender.unicast.flow.control.strategy";
-    public static final String SENDER_UNICAST_FLOW_CONTROL_STRATEGY = getProperty(
-        SENDER_UNICAST_FLOW_CONTROL_STRATEGY_PROP_NAME, "uk.co.real_logic.aeron.driver.UnicastSenderFlowControl");
+    public static final String UNICAST_FLOW_CONTROL_STRATEGY_PROP_NAME =
+        "aeron.unicast.flow.control.strategy";
+    public static final String UNICAST_FLOW_CONTROL_STRATEGY = getProperty(
+        UNICAST_FLOW_CONTROL_STRATEGY_PROP_NAME, "uk.co.real_logic.aeron.driver.UnicastFlowControl");
 
     /**
-     * {@link SenderFlowControl} to be employed for multicast channels.
+     * {@link FlowControl} to be employed for multicast channels.
      */
-    public static final String SENDER_MULTICAST_FLOW_CONTROL_STRATEGY_PROP_NAME =
-        "aeron.sender.multicast.flow.control.strategy";
-    public static final String SENDER_MULTICAST_FLOW_CONTROL_STRATEGY = getProperty(
-        SENDER_MULTICAST_FLOW_CONTROL_STRATEGY_PROP_NAME, "uk.co.real_logic.aeron.driver.UnicastSenderFlowControl");
+    public static final String MULTICAST_FLOW_CONTROL_STRATEGY_PROP_NAME =
+        "aeron.multicast.flow.control.strategy";
+    public static final String MULTICAST_FLOW_CONTROL_STRATEGY = getProperty(
+        MULTICAST_FLOW_CONTROL_STRATEGY_PROP_NAME, "uk.co.real_logic.aeron.driver.MaxMulticastFlowControl");
 
     /** Length of the maximum transport unit of the media driver's protocol */
     public static final String MTU_LENGTH_PROP_NAME = "aeron.mtu.length";
     public static final int MTU_LENGTH_DEFAULT = 4096;
+    public static final int MTU_LENGTH = getInteger(MTU_LENGTH_PROP_NAME, MTU_LENGTH_DEFAULT);
 
     public static final String THREADING_MODE_PROP_NAME = "aeron.threading.mode";
     public static final String THREADING_MODE_DEFAULT = DEDICATED.name();
+
+    /** Disable sending NAKs from the media driver. */
+    public static final String DO_NOT_SEND_NAK_PROP_NAME = "aeron.driver.disable.naks";
+
+    /**
+     * how often to check liveness & cleanup
+     */
+    public static final int HEARTBEAT_TIMEOUT_MS = 1000;
 
     /**
      * How far ahead the receiver can get from the subscriber position.
@@ -371,11 +393,6 @@ public class Configuration
         }
     }
 
-    public static IdleStrategy eventReaderIdleStrategy()
-    {
-        return new BackoffIdleStrategy(0, 0, AGENT_IDLE_MIN_PARK_NS, AGENT_IDLE_MAX_PARK_NS);
-    }
-
     public static IdleStrategy agentIdleStrategy()
     {
         IdleStrategy idleStrategy = null;
@@ -401,34 +418,34 @@ public class Configuration
         return idleStrategy;
     }
 
-    public static SenderFlowControl unicastSenderFlowControlStrategy()
+    public static FlowControl unicastFlowControlStrategy()
     {
-        SenderFlowControl senderFlowControl = null;
+        FlowControl flowControl = null;
         try
         {
-             senderFlowControl= (SenderFlowControl)Class.forName(SENDER_UNICAST_FLOW_CONTROL_STRATEGY).newInstance();
+             flowControl = (FlowControl)Class.forName(UNICAST_FLOW_CONTROL_STRATEGY).newInstance();
         }
         catch (final Exception ex)
         {
             LangUtil.rethrowUnchecked(ex);
         }
 
-        return senderFlowControl;
+        return flowControl;
     }
 
-    public static SenderFlowControl multicastSenderFlowControlStrategy()
+    public static FlowControl multicastFlowControlStrategy()
     {
-        SenderFlowControl senderFlowControl = null;
+        FlowControl flowControl = null;
         try
         {
-            senderFlowControl = (SenderFlowControl)Class.forName(SENDER_MULTICAST_FLOW_CONTROL_STRATEGY).newInstance();
+            flowControl = (FlowControl)Class.forName(MULTICAST_FLOW_CONTROL_STRATEGY).newInstance();
         }
         catch (final Exception ex)
         {
             LangUtil.rethrowUnchecked(ex);
         }
 
-        return senderFlowControl;
+        return flowControl;
     }
 
     public static TimerWheel newConductorTimerWheel()
@@ -480,7 +497,7 @@ public class Configuration
     {
         if (0 == lossRate)
         {
-            return (address, length) -> false;
+            return (address, buffer, length) -> false;
         }
 
         return new RandomLossGenerator(lossRate, lossSeed);
@@ -489,5 +506,10 @@ public class Configuration
     public static ThreadingMode threadingMode()
     {
         return ThreadingMode.valueOf(getProperty(THREADING_MODE_PROP_NAME, THREADING_MODE_DEFAULT));
+    }
+
+    public static boolean doNotSendNaks()
+    {
+        return Boolean.parseBoolean(getProperty(DO_NOT_SEND_NAK_PROP_NAME, "false"));
     }
 }

@@ -15,17 +15,17 @@
  */
 package uk.co.real_logic.aeron.driver;
 
-import uk.co.real_logic.aeron.common.FeedbackDelayGenerator;
+import uk.co.real_logic.aeron.protocol.DataHeaderFlyweight;
 import uk.co.real_logic.agrona.TimerWheel;
-import uk.co.real_logic.aeron.common.concurrent.logbuffer.LogBufferDescriptor;
 import uk.co.real_logic.agrona.collections.Long2ObjectHashMap;
 import uk.co.real_logic.agrona.concurrent.AtomicCounter;
 import uk.co.real_logic.agrona.concurrent.OneToOneConcurrentArrayQueue;
-import uk.co.real_logic.aeron.common.concurrent.logbuffer.FrameDescriptor;
 
 import java.util.Queue;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.IntStream;
+
+import static uk.co.real_logic.aeron.logbuffer.LogBufferDescriptor.computePosition;
 
 /**
  * Tracking and handling of retransmit request, NAKs, for senders and receivers
@@ -82,13 +82,7 @@ public class RetransmitHandler
 
     public void close()
     {
-        activeRetransmitByPositionMap.forEach(
-            (position, retransmitAction) ->
-            {
-                retransmitAction.delayTimer.cancel();
-                retransmitAction.lingerTimer.cancel();
-            }
-        );
+        activeRetransmitByPositionMap.forEach((position, retransmitAction) -> retransmitAction.cancel());
     }
 
     /**
@@ -105,28 +99,28 @@ public class RetransmitHandler
             return;
         }
 
-        final long position = LogBufferDescriptor.computePosition(termId, termOffset, positionBitsToShift, initialTermId);
+        final long position = computePosition(termId, termOffset, positionBitsToShift, initialTermId);
 
         if (!retransmitActionPool.isEmpty() && null == activeRetransmitByPositionMap.get(position))
         {
-            final RetransmitAction retransmitAction = retransmitActionPool.poll();
-            retransmitAction.termId = termId;
-            retransmitAction.termOffset = termOffset;
-            retransmitAction.length = Math.min(length, capacity - termOffset);
-            retransmitAction.position = position;
+            final RetransmitAction action = retransmitActionPool.poll();
+            action.termId = termId;
+            action.termOffset = termOffset;
+            action.length = Math.min(length, capacity - termOffset);
+            action.position = position;
 
             final long delay = determineRetransmitDelay();
             if (0 == delay)
             {
-                perform(retransmitAction);
-                retransmitAction.linger(determineLingerTimeout());
+                perform(action);
+                action.linger(determineLingerTimeout());
             }
             else
             {
-                retransmitAction.delay(delay);
+                action.delay(delay);
             }
 
-            activeRetransmitByPositionMap.put(position, retransmitAction);
+            activeRetransmitByPositionMap.put(position, action);
         }
     }
 
@@ -140,22 +134,22 @@ public class RetransmitHandler
      */
     public void onRetransmitReceived(final int termId, final int termOffset)
     {
-        final long position = LogBufferDescriptor.computePosition(termId, termOffset, positionBitsToShift, initialTermId);
-        final RetransmitAction retransmitAction = activeRetransmitByPositionMap.get(position);
+        final long position = computePosition(termId, termOffset, positionBitsToShift, initialTermId);
+        final RetransmitAction action = activeRetransmitByPositionMap.get(position);
 
-        if (null != retransmitAction && State.DELAYED == retransmitAction.state)
+        if (null != action && State.DELAYED == action.state)
         {
             activeRetransmitByPositionMap.remove(position);
-            retransmitAction.state = State.INACTIVE;
-            retransmitActionPool.offer(retransmitAction);
-            retransmitAction.delayTimer.cancel();
+            action.state = State.INACTIVE;
+            retransmitActionPool.offer(action);
+            action.delayTimer.cancel();
             // do not go into linger
         }
     }
 
     private boolean isInvalid(final int termOffset)
     {
-        final boolean isInvalid = termOffset >= (capacity - FrameDescriptor.BASE_HEADER_LENGTH);
+        final boolean isInvalid = termOffset >= (capacity - DataHeaderFlyweight.HEADER_LENGTH);
 
         if (isInvalid)
         {
@@ -175,9 +169,9 @@ public class RetransmitHandler
         return lingerTimeoutGenerator.generateDelay();
     }
 
-    private void perform(final RetransmitAction retransmitAction)
+    private void perform(final RetransmitAction action)
     {
-        retransmitSender.send(retransmitAction.termId, retransmitAction.termOffset, retransmitAction.length);
+        retransmitSender.resend(action.termId, action.termOffset, action.length);
     }
 
     private enum State
@@ -189,10 +183,10 @@ public class RetransmitHandler
 
     final class RetransmitAction
     {
+        long position;
         int termId;
         int termOffset;
         int length;
-        long position;
         State state = State.INACTIVE;
         TimerWheel.Timer delayTimer = timerWheel.newBlankTimer();
         TimerWheel.Timer lingerTimer = timerWheel.newBlankTimer();
@@ -220,6 +214,12 @@ public class RetransmitHandler
             state = State.INACTIVE;
             activeRetransmitByPositionMap.remove(position);
             retransmitActionPool.offer(this);
+        }
+
+        public void cancel()
+        {
+            delayTimer.cancel();
+            lingerTimer.cancel();
         }
     }
 }

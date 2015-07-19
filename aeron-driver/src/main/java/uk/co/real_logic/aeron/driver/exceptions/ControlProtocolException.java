@@ -15,7 +15,7 @@
  */
 package uk.co.real_logic.aeron.driver.exceptions;
 
-import uk.co.real_logic.aeron.common.ErrorCode;
+import uk.co.real_logic.aeron.ErrorCode;
 
 public class ControlProtocolException extends IllegalArgumentException
 {
@@ -24,6 +24,12 @@ public class ControlProtocolException extends IllegalArgumentException
     public ControlProtocolException(final ErrorCode code, final String msg)
     {
         super(msg);
+        this.code = code;
+    }
+
+    public ControlProtocolException(final ErrorCode code, final Exception rootCause)
+    {
+        super(rootCause);
         this.code = code;
     }
 

@@ -15,17 +15,16 @@
  */
 package uk.co.real_logic.aeron;
 
-import uk.co.real_logic.aeron.common.ErrorCode;
+import uk.co.real_logic.aeron.command.ConnectionBuffersReadyFlyweight;
+import uk.co.real_logic.aeron.command.ConnectionMessageFlyweight;
+import uk.co.real_logic.aeron.command.CorrelatedMessageFlyweight;
+import uk.co.real_logic.aeron.command.PublicationBuffersReadyFlyweight;
+import uk.co.real_logic.aeron.protocol.ErrorFlyweight;
 import uk.co.real_logic.agrona.MutableDirectBuffer;
-import uk.co.real_logic.aeron.common.command.ConnectionMessageFlyweight;
-import uk.co.real_logic.aeron.common.command.ConnectionBuffersReadyFlyweight;
-import uk.co.real_logic.aeron.common.command.CorrelatedMessageFlyweight;
-import uk.co.real_logic.aeron.common.command.PublicationBuffersReadyFlyweight;
 import uk.co.real_logic.agrona.concurrent.MessageHandler;
 import uk.co.real_logic.agrona.concurrent.broadcast.CopyBroadcastReceiver;
-import uk.co.real_logic.aeron.common.protocol.ErrorFlyweight;
 
-import static uk.co.real_logic.aeron.common.command.ControlProtocolEvents.*;
+import static uk.co.real_logic.aeron.command.ControlProtocolEvents.*;
 
 /**
  * Analogue of {@link DriverProxy} on the client side
@@ -42,6 +41,8 @@ class DriverListenerAdapter implements MessageHandler
     private final DriverListener listener;
 
     private long activeCorrelationId;
+    private long lastReceivedCorrelationId;
+    private String expectedChannel;
 
     public DriverListenerAdapter(final CopyBroadcastReceiver broadcastReceiver, final DriverListener listener)
     {
@@ -49,11 +50,18 @@ class DriverListenerAdapter implements MessageHandler
         this.listener = listener;
     }
 
-    public int receiveMessages(final long correlationId)
+    public int pollMessage(final long activeCorrelationId, final String expectedChannel)
     {
-        activeCorrelationId = correlationId;
+        this.activeCorrelationId = activeCorrelationId;
+        this.lastReceivedCorrelationId = -1;
+        this.expectedChannel = expectedChannel;
 
         return broadcastReceiver.receive(this);
+    }
+
+    public long lastReceivedCorrelationId()
+    {
+        return lastReceivedCorrelationId;
     }
 
     public void onMessage(final int msgTypeId, final MutableDirectBuffer buffer, final int index, final int length)
@@ -66,18 +74,17 @@ class DriverListenerAdapter implements MessageHandler
 
                 final long correlationId = publicationReady.correlationId();
 
-                if (activeCorrelationId == correlationId)
+                if (correlationId == activeCorrelationId)
                 {
                     final int sessionId = publicationReady.sessionId();
                     final int streamId = publicationReady.streamId();
-                    final int positionCounterId = publicationReady.positionCounterId();
-                    final int mtuLength = publicationReady.mtuLength();
-                    final String channel = publicationReady.channel();
+                    final int publicationLimitCounterId = publicationReady.publicationLimitCounterId();
                     final String logFileName = publicationReady.logFileName();
 
                     listener.onNewPublication(
-                        channel, streamId, sessionId, positionCounterId, mtuLength, logFileName, correlationId);
+                        expectedChannel, streamId, sessionId, publicationLimitCounterId, logFileName, correlationId);
 
+                    lastReceivedCorrelationId = correlationId;
                 }
                 break;
             }
@@ -88,58 +95,58 @@ class DriverListenerAdapter implements MessageHandler
 
                 final int sessionId = connectionReady.sessionId();
                 final int streamId = connectionReady.streamId();
-                final int termId = connectionReady.termId();
                 final long joiningPosition = connectionReady.joiningPosition();
-                final String channel = connectionReady.channel();
                 final String logFileName = connectionReady.logFileName();
                 final long correlationId = connectionReady.correlationId();
 
                 listener.onNewConnection(
-                    channel, streamId, sessionId, termId, joiningPosition, logFileName, connectionReady, correlationId);
+                    streamId, sessionId, joiningPosition, logFileName, connectionReady, correlationId);
                 break;
             }
 
             case ON_OPERATION_SUCCESS:
+            {
                 correlatedMessage.wrap(buffer, index);
-                if (correlatedMessage.correlationId() == activeCorrelationId)
+
+                final long correlationId = correlatedMessage.correlationId();
+                if (correlationId == activeCorrelationId)
                 {
-                    listener.operationSucceeded();
+                    lastReceivedCorrelationId = correlationId;
                 }
                 break;
+            }
 
             case ON_INACTIVE_CONNECTION:
+            {
                 connectionMessage.wrap(buffer, index);
+
                 listener.onInactiveConnection(
-                    connectionMessage.channel(),
                     connectionMessage.streamId(),
                     connectionMessage.sessionId(),
+                    connectionMessage.position(),
                     connectionMessage.correlationId());
                 break;
+            }
 
             case ON_ERROR:
-                onError(buffer, index, listener, activeCorrelationId);
+            {
+                errorHeader.wrap(buffer, index);
+
+                correlatedMessage.wrap(buffer, errorHeader.offendingHeaderOffset());
+
+                final long correlationId = correlatedMessage.correlationId();
+
+                if (correlationId == activeCorrelationId)
+                {
+                    listener.onError(errorHeader.errorCode(), errorHeader.errorMessage(), correlatedMessage.correlationId());
+
+                    lastReceivedCorrelationId = correlationId;
+                }
                 break;
+            }
 
             default:
                 break;
         }
-    }
-
-    private void onError(
-        final MutableDirectBuffer buffer, final int index, final DriverListener listener, final long activeCorrelationId)
-    {
-        errorHeader.wrap(buffer, index);
-        final ErrorCode errorCode = errorHeader.errorCode();
-        if (activeCorrelationId == correlationId(buffer, errorHeader.offendingHeaderOffset()))
-        {
-            listener.onError(errorCode, errorHeader.errorMessage());
-        }
-    }
-
-    private long correlationId(final MutableDirectBuffer buffer, final int offset)
-    {
-        correlatedMessage.wrap(buffer, offset);
-
-        return correlatedMessage.correlationId();
     }
 }

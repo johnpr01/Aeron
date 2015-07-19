@@ -18,42 +18,48 @@ package uk.co.real_logic.aeron.driver;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
-import uk.co.real_logic.aeron.common.HeapPositionReporter;
-import uk.co.real_logic.agrona.TimerWheel;
-import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
-import uk.co.real_logic.agrona.concurrent.AtomicCounter;
-import uk.co.real_logic.agrona.concurrent.NanoClock;
-import uk.co.real_logic.agrona.concurrent.OneToOneConcurrentArrayQueue;
-import uk.co.real_logic.aeron.common.concurrent.logbuffer.FrameDescriptor;
-import uk.co.real_logic.aeron.common.concurrent.logbuffer.LogReader;
-import uk.co.real_logic.aeron.common.event.EventLogger;
-import uk.co.real_logic.aeron.common.protocol.DataHeaderFlyweight;
-import uk.co.real_logic.aeron.common.protocol.HeaderFlyweight;
-import uk.co.real_logic.aeron.common.protocol.SetupFlyweight;
-import uk.co.real_logic.aeron.common.protocol.StatusMessageFlyweight;
-import uk.co.real_logic.agrona.status.PositionIndicator;
-import uk.co.real_logic.agrona.status.PositionReporter;
+import uk.co.real_logic.aeron.driver.buffer.RawLogPartition;
+import uk.co.real_logic.aeron.logbuffer.FrameDescriptor;
+import uk.co.real_logic.aeron.logbuffer.Header;
+import uk.co.real_logic.aeron.logbuffer.TermReader;
+import uk.co.real_logic.aeron.driver.event.EventLogger;
+import uk.co.real_logic.aeron.protocol.DataHeaderFlyweight;
+import uk.co.real_logic.aeron.protocol.HeaderFlyweight;
+import uk.co.real_logic.aeron.protocol.SetupFlyweight;
+import uk.co.real_logic.aeron.protocol.StatusMessageFlyweight;
 import uk.co.real_logic.aeron.driver.buffer.RawLog;
 import uk.co.real_logic.aeron.driver.buffer.RawLogFactory;
 import uk.co.real_logic.aeron.driver.cmd.CreateConnectionCmd;
 import uk.co.real_logic.aeron.driver.cmd.DriverConductorCmd;
+import uk.co.real_logic.aeron.driver.media.ReceiveChannelEndpoint;
+import uk.co.real_logic.aeron.driver.media.TransportPoller;
+import uk.co.real_logic.aeron.driver.media.UdpChannel;
+import uk.co.real_logic.agrona.ErrorHandler;
+import uk.co.real_logic.agrona.TimerWheel;
+import uk.co.real_logic.agrona.concurrent.AtomicCounter;
+import uk.co.real_logic.agrona.concurrent.NanoClock;
+import uk.co.real_logic.agrona.concurrent.OneToOneConcurrentArrayQueue;
+import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
+import uk.co.real_logic.agrona.concurrent.status.AtomicLongPosition;
+import uk.co.real_logic.agrona.concurrent.status.Position;
+import uk.co.real_logic.agrona.concurrent.status.ReadablePosition;
 
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
-import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
+import static java.lang.Integer.numberOfTrailingZeros;
 import static junit.framework.TestCase.assertTrue;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.core.Is.is;
 import static org.junit.Assert.assertNotNull;
 import static org.mockito.Mockito.*;
-import static uk.co.real_logic.aeron.common.concurrent.logbuffer.LogBufferDescriptor.*;
-import static uk.co.real_logic.agrona.BitUtil.align;
+import static uk.co.real_logic.aeron.logbuffer.LogBufferDescriptor.*;
 import static uk.co.real_logic.aeron.driver.LogBufferHelper.newTestLogBuffers;
+import static uk.co.real_logic.agrona.BitUtil.align;
 
 public class ReceiverTest
 {
@@ -72,19 +78,20 @@ public class ReceiverTest
     private static final long STATUS_MESSAGE_TIMEOUT = Configuration.STATUS_MESSAGE_TIMEOUT_DEFAULT_NS;
     private static final InetSocketAddress SOURCE_ADDRESS = new InetSocketAddress("localhost", 45679);
 
-    private static final PositionIndicator POSITION_INDICATOR = mock(PositionIndicator.class);
-    private static final List<PositionIndicator> POSITION_INDICATORS = new ArrayList<>(Arrays.asList(POSITION_INDICATOR));
+    private static final ReadablePosition POSITION = mock(ReadablePosition.class);
+    private static final List<ReadablePosition> POSITIONS = Collections.singletonList(POSITION);
 
-    private final LossHandler mockLossHandler = mock(LossHandler.class);
+    private final FeedbackDelayGenerator mockFeedbackDelayGenerator = mock(FeedbackDelayGenerator.class);
     private final TransportPoller mockTransportPoller = mock(TransportPoller.class);
     private final SystemCounters mockSystemCounters = mock(SystemCounters.class);
     private final RawLogFactory mockRawLogFactory = mock(RawLogFactory.class);
-    private final PositionReporter mockCompletedReceivedPosition = spy(new HeapPositionReporter());
-    private final PositionReporter mockHighestReceivedPosition = spy(new HeapPositionReporter());
-    private final ByteBuffer dataFrameBuffer = ByteBuffer.allocate(2 * 1024);
+    private final Position mockHighestReceivedPosition = spy(new AtomicLongPosition());
+    private final ByteBuffer dataFrameBuffer = ByteBuffer.allocateDirect(2 * 1024);
     private final UnsafeBuffer dataBuffer = new UnsafeBuffer(dataFrameBuffer);
-    private final ByteBuffer setupFrameBuffer = ByteBuffer.allocate(SetupFlyweight.HEADER_LENGTH);
+    private final ByteBuffer setupFrameBuffer = ByteBuffer.allocateDirect(SetupFlyweight.HEADER_LENGTH);
     private final UnsafeBuffer setupBuffer = new UnsafeBuffer(setupFrameBuffer);
+
+    private final ErrorHandler mockErrorHandler = mock(ErrorHandler.class);
 
     private final DataHeaderFlyweight dataHeader = new DataHeaderFlyweight();
     private final StatusMessageFlyweight statusHeader = new StatusMessageFlyweight();
@@ -98,7 +105,8 @@ public class ReceiverTest
     private final TimerWheel timerWheel = new TimerWheel(
         clock, Configuration.CONDUCTOR_TICK_DURATION_US, TimeUnit.MICROSECONDS, Configuration.CONDUCTOR_TICKS_PER_WHEEL);
 
-    private LogReader[] logReaders;
+    private final Header header = new Header(INITIAL_TERM_ID, TERM_BUFFER_LENGTH);
+    private UnsafeBuffer[] termBuffers;
     private DatagramChannel senderChannel;
 
     private InetSocketAddress senderAddress = new InetSocketAddress("localhost", 40123);
@@ -113,26 +121,26 @@ public class ReceiverTest
     @Before
     public void setUp() throws Exception
     {
-        when(POSITION_INDICATOR.position())
-            .thenReturn(computePosition(ACTIVE_TERM_ID, 0, Integer.numberOfTrailingZeros(TERM_BUFFER_LENGTH), ACTIVE_TERM_ID));
+        when(POSITION.getVolatile())
+            .thenReturn(computePosition(ACTIVE_TERM_ID, 0, numberOfTrailingZeros(TERM_BUFFER_LENGTH), ACTIVE_TERM_ID));
         when(mockSystemCounters.statusMessagesSent()).thenReturn(mock(AtomicCounter.class));
         when(mockSystemCounters.flowControlUnderRuns()).thenReturn(mock(AtomicCounter.class));
         when(mockSystemCounters.bytesReceived()).thenReturn(mock(AtomicCounter.class));
 
         final MediaDriver.Context ctx = new MediaDriver.Context()
-            .conductorCommandQueue(new OneToOneConcurrentArrayQueue<>(1024))
+            .toConductorFromReceiverCommandQueue(new OneToOneConcurrentArrayQueue<>(1024))
             .receiverNioSelector(mockTransportPoller)
-            .conductorNioSelector(mockTransportPoller)
+            .senderNioSelector(mockTransportPoller)
             .rawLogBuffersFactory(mockRawLogFactory)
             .conductorTimerWheel(timerWheel)
             .systemCounters(mockSystemCounters)
             .receiverCommandQueue(new OneToOneConcurrentArrayQueue<>(1024))
             .eventLogger(mockLogger);
 
-        toConductorQueue = ctx.conductorCommandQueue();
+        toConductorQueue = ctx.toConductorFromReceiverCommandQueue();
         final DriverConductorProxy driverConductorProxy =
             new DriverConductorProxy(ThreadingMode.DEDICATED, toConductorQueue, mock(AtomicCounter.class));
-        ctx.driverConductorProxy(driverConductorProxy);
+        ctx.fromReceiverDriverConductorProxy(driverConductorProxy);
 
         receiverProxy = new ReceiverProxy(ThreadingMode.DEDICATED, ctx.receiverCommandQueue(), mock(AtomicCounter.class));
 
@@ -142,13 +150,18 @@ public class ReceiverTest
         senderChannel.bind(senderAddress);
         senderChannel.configureBlocking(false);
 
-        logReaders = rawLog
+        termBuffers = rawLog
             .stream()
-            .map((partition) -> new LogReader(partition.termBuffer(), partition.metaDataBuffer()))
-            .toArray(LogReader[]::new);
+            .map(RawLogPartition::termBuffer)
+            .toArray(UnsafeBuffer[]::new);
 
         receiveChannelEndpoint = new ReceiveChannelEndpoint(
-            UdpChannel.parse(URI), driverConductorProxy, mockLogger, mockSystemCounters, (address, length) -> false);
+            UdpChannel.parse(URI),
+            driverConductorProxy,
+            receiver,
+            mockLogger,
+            mockSystemCounters,
+            (address, buffer, length) -> false);
     }
 
     @After
@@ -162,34 +175,31 @@ public class ReceiverTest
     @Test
     public void shouldCreateRcvTermAndSendSmOnSetup() throws Exception
     {
-        receiverProxy.registerMediaEndpoint(receiveChannelEndpoint);
+        receiverProxy.registerReceiveChannelEndpoint(receiveChannelEndpoint);
         receiverProxy.addSubscription(receiveChannelEndpoint, STREAM_ID);
 
         receiver.doWork();
 
         fillSetupFrame(setupHeader);
-        receiveChannelEndpoint.onSetupFrame(setupHeader, setupBuffer, setupHeader.frameLength(), senderAddress);
+        receiveChannelEndpoint.onSetupMessage(setupHeader, setupBuffer, setupHeader.frameLength(), senderAddress);
 
-        final DriverConnection connection = new DriverConnection(
-            receiveChannelEndpoint,
-            CORRELATION_ID,
+        final NetworkConnection connection = new NetworkConnection(
+            CORRELATION_ID, receiveChannelEndpoint,
+            senderAddress,
             SESSION_ID,
             STREAM_ID,
             INITIAL_TERM_ID,
             ACTIVE_TERM_ID,
             INITIAL_TERM_OFFSET,
             INITIAL_WINDOW_LENGTH,
-            STATUS_MESSAGE_TIMEOUT,
             rawLog,
-            mockLossHandler,
-            receiveChannelEndpoint.composeStatusMessageSender(senderAddress, SESSION_ID, STREAM_ID),
-            POSITION_INDICATORS,
-            mockCompletedReceivedPosition,
+            timerWheel,
+            mockFeedbackDelayGenerator,
+            POSITIONS,
             mockHighestReceivedPosition,
             clock,
             mockSystemCounters,
-            SOURCE_ADDRESS,
-            mockLogger);
+            SOURCE_ADDRESS);
 
         final int messagesRead = toConductorQueue.drain(
             (e) ->
@@ -209,7 +219,8 @@ public class ReceiverTest
 
         receiver.doWork();
 
-        connection.sendPendingStatusMessages(1000);
+        connection.trackRebuild();
+        connection.sendPendingStatusMessage(1000, STATUS_MESSAGE_TIMEOUT);
 
         final ByteBuffer rcvBuffer = ByteBuffer.allocateDirect(256);
         final InetSocketAddress rcvAddress = (InetSocketAddress)senderChannel.receive(rcvBuffer);
@@ -221,58 +232,57 @@ public class ReceiverTest
         assertThat(statusHeader.headerType(), is(HeaderFlyweight.HDR_TYPE_SM));
         assertThat(statusHeader.streamId(), is(STREAM_ID));
         assertThat(statusHeader.sessionId(), is(SESSION_ID));
-        assertThat(statusHeader.termId(), is(ACTIVE_TERM_ID));
+        assertThat(statusHeader.consumptionTermId(), is(ACTIVE_TERM_ID));
         assertThat(statusHeader.frameLength(), is(StatusMessageFlyweight.HEADER_LENGTH));
     }
 
     @Test
     public void shouldInsertDataIntoLogAfterInitialExchange() throws Exception
     {
-        receiverProxy.registerMediaEndpoint(receiveChannelEndpoint);
+        receiverProxy.registerReceiveChannelEndpoint(receiveChannelEndpoint);
         receiverProxy.addSubscription(receiveChannelEndpoint, STREAM_ID);
 
         receiver.doWork();
 
         fillSetupFrame(setupHeader);
-        receiveChannelEndpoint.onSetupFrame(setupHeader, setupBuffer, setupHeader.frameLength(), senderAddress);
+        receiveChannelEndpoint.onSetupMessage(setupHeader, setupBuffer, setupHeader.frameLength(), senderAddress);
 
-        int messagesRead = toConductorQueue.drain(
+        final int commandsRead = toConductorQueue.drain(
             (e) ->
             {
                 assertTrue(e instanceof CreateConnectionCmd);
                 // pass in new term buffer from conductor, which should trigger SM
                 receiverProxy.newConnection(
                     receiveChannelEndpoint,
-                    new DriverConnection(
-                        receiveChannelEndpoint,
-                        CORRELATION_ID,
+                    new NetworkConnection(
+                        CORRELATION_ID, receiveChannelEndpoint,
+                        senderAddress,
                         SESSION_ID,
                         STREAM_ID,
                         INITIAL_TERM_ID,
                         ACTIVE_TERM_ID,
                         INITIAL_TERM_OFFSET,
                         INITIAL_WINDOW_LENGTH,
-                        STATUS_MESSAGE_TIMEOUT,
                         rawLog,
-                        mockLossHandler,
-                        receiveChannelEndpoint.composeStatusMessageSender(senderAddress, SESSION_ID, STREAM_ID),
-                        POSITION_INDICATORS,
-                        mockCompletedReceivedPosition,
+                        timerWheel,
+                        mockFeedbackDelayGenerator,
+                        POSITIONS,
                         mockHighestReceivedPosition,
                         clock,
                         mockSystemCounters,
-                        SOURCE_ADDRESS,
-                        mockLogger));
+                        SOURCE_ADDRESS));
             });
 
-        assertThat(messagesRead, is(1));
+        assertThat(commandsRead, is(1));
 
         receiver.doWork();
 
         fillDataFrame(dataHeader, 0, FAKE_PAYLOAD);
-        receiveChannelEndpoint.onDataFrame(dataHeader, dataBuffer, dataHeader.frameLength(), senderAddress);
+        receiveChannelEndpoint.onDataPacket(dataHeader, dataBuffer, dataHeader.frameLength(), senderAddress);
 
-        messagesRead = logReaders[ACTIVE_INDEX].read(
+        final long readOutcome = TermReader.read(
+            termBuffers[ACTIVE_INDEX],
+            INITIAL_TERM_OFFSET,
             (buffer, offset, length, header) ->
             {
                 assertThat(header.type(), is(HeaderFlyweight.HDR_TYPE_DATA));
@@ -282,62 +292,63 @@ public class ReceiverTest
                 assertThat(header.termOffset(), is(0));
                 assertThat(header.frameLength(), is(DataHeaderFlyweight.HEADER_LENGTH + FAKE_PAYLOAD.length));
             },
-            Integer.MAX_VALUE);
+            Integer.MAX_VALUE,
+            header,
+            mockErrorHandler);
 
-        assertThat(messagesRead, is(1));
+        assertThat(TermReader.fragmentsRead(readOutcome), is(1));
     }
 
     @Test
     public void shouldNotOverwriteDataFrameWithHeartbeat() throws Exception
     {
-        receiverProxy.registerMediaEndpoint(receiveChannelEndpoint);
+        receiverProxy.registerReceiveChannelEndpoint(receiveChannelEndpoint);
         receiverProxy.addSubscription(receiveChannelEndpoint, STREAM_ID);
 
         receiver.doWork();
 
         fillSetupFrame(setupHeader);
-        receiveChannelEndpoint.onSetupFrame(setupHeader, setupBuffer, setupHeader.frameLength(), senderAddress);
+        receiveChannelEndpoint.onSetupMessage(setupHeader, setupBuffer, setupHeader.frameLength(), senderAddress);
 
-        int messagesRead = toConductorQueue.drain(
+        final int commandsRead = toConductorQueue.drain(
             (e) ->
             {
                 assertTrue(e instanceof CreateConnectionCmd);
                 // pass in new term buffer from conductor, which should trigger SM
                 receiverProxy.newConnection(
                     receiveChannelEndpoint,
-                    new DriverConnection(
-                        receiveChannelEndpoint,
-                        CORRELATION_ID,
+                    new NetworkConnection(
+                        CORRELATION_ID, receiveChannelEndpoint,
+                        senderAddress,
                         SESSION_ID,
                         STREAM_ID,
                         INITIAL_TERM_ID,
                         ACTIVE_TERM_ID,
                         INITIAL_TERM_OFFSET,
                         INITIAL_WINDOW_LENGTH,
-                        STATUS_MESSAGE_TIMEOUT,
                         rawLog,
-                        mockLossHandler,
-                        receiveChannelEndpoint.composeStatusMessageSender(senderAddress, SESSION_ID, STREAM_ID),
-                        POSITION_INDICATORS,
-                        mockCompletedReceivedPosition,
+                        timerWheel,
+                        mockFeedbackDelayGenerator,
+                        POSITIONS,
                         mockHighestReceivedPosition,
                         clock,
                         mockSystemCounters,
-                        SOURCE_ADDRESS,
-                        mockLogger));
+                        SOURCE_ADDRESS));
             });
 
-        assertThat(messagesRead, is(1));
+        assertThat(commandsRead, is(1));
 
         receiver.doWork();
 
         fillDataFrame(dataHeader, 0, FAKE_PAYLOAD);  // initial data frame
-        receiveChannelEndpoint.onDataFrame(dataHeader, dataBuffer, dataHeader.frameLength(), senderAddress);
+        receiveChannelEndpoint.onDataPacket(dataHeader, dataBuffer, dataHeader.frameLength(), senderAddress);
 
         fillDataFrame(dataHeader, 0, FAKE_PAYLOAD);  // heartbeat with same term offset
-        receiveChannelEndpoint.onDataFrame(dataHeader, dataBuffer, dataHeader.frameLength(), senderAddress);
+        receiveChannelEndpoint.onDataPacket(dataHeader, dataBuffer, dataHeader.frameLength(), senderAddress);
 
-        messagesRead = logReaders[ACTIVE_INDEX].read(
+        final long readOutcome = TermReader.read(
+            termBuffers[ACTIVE_INDEX],
+            INITIAL_TERM_OFFSET,
             (buffer, offset, length, header) ->
             {
                 assertThat(header.type(), is(HeaderFlyweight.HDR_TYPE_DATA));
@@ -347,62 +358,63 @@ public class ReceiverTest
                 assertThat(header.termOffset(), is(0));
                 assertThat(header.frameLength(), is(DataHeaderFlyweight.HEADER_LENGTH + FAKE_PAYLOAD.length));
             },
-            Integer.MAX_VALUE);
+            Integer.MAX_VALUE,
+            header,
+            mockErrorHandler);
 
-        assertThat(messagesRead, is(1));
+        assertThat(TermReader.fragmentsRead(readOutcome), is(1));
     }
 
     @Test
     public void shouldOverwriteHeartbeatWithDataFrame() throws Exception
     {
-        receiverProxy.registerMediaEndpoint(receiveChannelEndpoint);
+        receiverProxy.registerReceiveChannelEndpoint(receiveChannelEndpoint);
         receiverProxy.addSubscription(receiveChannelEndpoint, STREAM_ID);
 
         receiver.doWork();
 
         fillSetupFrame(setupHeader);
-        receiveChannelEndpoint.onSetupFrame(setupHeader, setupBuffer, setupHeader.frameLength(), senderAddress);
+        receiveChannelEndpoint.onSetupMessage(setupHeader, setupBuffer, setupHeader.frameLength(), senderAddress);
 
-        int messagesRead = toConductorQueue.drain(
+        final int commandsRead = toConductorQueue.drain(
             (e) ->
             {
                 assertTrue(e instanceof CreateConnectionCmd);
                 // pass in new term buffer from conductor, which should trigger SM
                 receiverProxy.newConnection(
                     receiveChannelEndpoint,
-                    new DriverConnection(
-                        receiveChannelEndpoint,
-                        CORRELATION_ID,
+                    new NetworkConnection(
+                        CORRELATION_ID, receiveChannelEndpoint,
+                        senderAddress,
                         SESSION_ID,
                         STREAM_ID,
                         INITIAL_TERM_ID,
                         ACTIVE_TERM_ID,
                         INITIAL_TERM_OFFSET,
                         INITIAL_WINDOW_LENGTH,
-                        STATUS_MESSAGE_TIMEOUT,
                         rawLog,
-                        mockLossHandler,
-                        receiveChannelEndpoint.composeStatusMessageSender(senderAddress, SESSION_ID, STREAM_ID),
-                        POSITION_INDICATORS,
-                        mockCompletedReceivedPosition,
+                        timerWheel,
+                        mockFeedbackDelayGenerator,
+                        POSITIONS,
                         mockHighestReceivedPosition,
                         clock,
                         mockSystemCounters,
-                        SOURCE_ADDRESS,
-                        mockLogger));
+                        SOURCE_ADDRESS));
             });
 
-        assertThat(messagesRead, is(1));
+        assertThat(commandsRead, is(1));
 
         receiver.doWork();
 
         fillDataFrame(dataHeader, 0, FAKE_PAYLOAD);  // heartbeat with same term offset
-        receiveChannelEndpoint.onDataFrame(dataHeader, dataBuffer, dataHeader.frameLength(), senderAddress);
+        receiveChannelEndpoint.onDataPacket(dataHeader, dataBuffer, dataHeader.frameLength(), senderAddress);
 
         fillDataFrame(dataHeader, 0, FAKE_PAYLOAD);  // initial data frame
-        receiveChannelEndpoint.onDataFrame(dataHeader, dataBuffer, dataHeader.frameLength(), senderAddress);
+        receiveChannelEndpoint.onDataPacket(dataHeader, dataBuffer, dataHeader.frameLength(), senderAddress);
 
-        messagesRead = logReaders[ACTIVE_INDEX].read(
+        final long readOutcome = TermReader.read(
+            termBuffers[ACTIVE_INDEX],
+            INITIAL_TERM_OFFSET,
             (buffer, offset, length, header) ->
             {
                 assertThat(header.type(), is(HeaderFlyweight.HDR_TYPE_DATA));
@@ -412,9 +424,11 @@ public class ReceiverTest
                 assertThat(header.termOffset(), is(0));
                 assertThat(header.frameLength(), is(DataHeaderFlyweight.HEADER_LENGTH + FAKE_PAYLOAD.length));
             },
-            Integer.MAX_VALUE);
+            Integer.MAX_VALUE,
+            header,
+            mockErrorHandler);
 
-        assertThat(messagesRead, is(1));
+        assertThat(TermReader.fragmentsRead(readOutcome), is(1));
     }
 
     @Test
@@ -424,59 +438,54 @@ public class ReceiverTest
         final int alignedDataFrameLength =
             align(DataHeaderFlyweight.HEADER_LENGTH + FAKE_PAYLOAD.length, FrameDescriptor.FRAME_ALIGNMENT);
 
-        receiverProxy.registerMediaEndpoint(receiveChannelEndpoint);
+        receiverProxy.registerReceiveChannelEndpoint(receiveChannelEndpoint);
         receiverProxy.addSubscription(receiveChannelEndpoint, STREAM_ID);
 
         receiver.doWork();
 
         fillSetupFrame(setupHeader, initialTermOffset);
-        receiveChannelEndpoint.onSetupFrame(setupHeader, setupBuffer, setupHeader.frameLength(), senderAddress);
+        receiveChannelEndpoint.onSetupMessage(setupHeader, setupBuffer, setupHeader.frameLength(), senderAddress);
 
-        int messagesRead = toConductorQueue.drain(
+        final int commandsRead = toConductorQueue.drain(
             (e) ->
             {
                 assertTrue(e instanceof CreateConnectionCmd);
                 // pass in new term buffer from conductor, which should trigger SM
                 receiverProxy.newConnection(
                     receiveChannelEndpoint,
-                    new DriverConnection(
-                        receiveChannelEndpoint,
-                        CORRELATION_ID,
+                    new NetworkConnection(
+                        CORRELATION_ID, receiveChannelEndpoint,
+                        senderAddress,
                         SESSION_ID,
                         STREAM_ID,
                         INITIAL_TERM_ID,
                         ACTIVE_TERM_ID,
                         initialTermOffset,
                         INITIAL_WINDOW_LENGTH,
-                        STATUS_MESSAGE_TIMEOUT,
                         rawLog,
-                        mockLossHandler,
-                        receiveChannelEndpoint.composeStatusMessageSender(senderAddress, SESSION_ID, STREAM_ID),
-                        POSITION_INDICATORS,
-                        mockCompletedReceivedPosition,
+                        timerWheel,
+                        mockFeedbackDelayGenerator,
+                        POSITIONS,
                         mockHighestReceivedPosition,
                         clock,
                         mockSystemCounters,
-                        SOURCE_ADDRESS,
-                        mockLogger));
+                        SOURCE_ADDRESS));
             });
 
-        assertThat(messagesRead, is(1));
+        assertThat(commandsRead, is(1));
 
-        verify(mockCompletedReceivedPosition).position(initialTermOffset);
-        verify(mockHighestReceivedPosition).position(initialTermOffset);
+        verify(mockHighestReceivedPosition).setOrdered(initialTermOffset);
 
         receiver.doWork();
 
         fillDataFrame(dataHeader, initialTermOffset, FAKE_PAYLOAD);  // initial data frame
-        receiveChannelEndpoint.onDataFrame(dataHeader, dataBuffer, alignedDataFrameLength, senderAddress);
+        receiveChannelEndpoint.onDataPacket(dataHeader, dataBuffer, alignedDataFrameLength, senderAddress);
 
-        verify(mockCompletedReceivedPosition).position(initialTermOffset + alignedDataFrameLength);
-        verify(mockHighestReceivedPosition).position(initialTermOffset + alignedDataFrameLength);
+        verify(mockHighestReceivedPosition).setOrdered(initialTermOffset + alignedDataFrameLength);
 
-        logReaders[ACTIVE_INDEX].seek(initialTermOffset);
-
-        messagesRead = logReaders[ACTIVE_INDEX].read(
+        final long readOutcome = TermReader.read(
+            termBuffers[ACTIVE_INDEX],
+            initialTermOffset,
             (buffer, offset, length, header) ->
             {
                 assertThat(header.type(), is(HeaderFlyweight.HDR_TYPE_DATA));
@@ -486,9 +495,11 @@ public class ReceiverTest
                 assertThat(header.termOffset(), is(initialTermOffset));
                 assertThat(header.frameLength(), is(DataHeaderFlyweight.HEADER_LENGTH + FAKE_PAYLOAD.length));
             },
-            Integer.MAX_VALUE);
+            Integer.MAX_VALUE,
+            header,
+            mockErrorHandler);
 
-        assertThat(messagesRead, is(1));
+        assertThat(TermReader.fragmentsRead(readOutcome), is(1));
     }
 
     private void fillDataFrame(final DataHeaderFlyweight header, final int termOffset, final byte[] payload)

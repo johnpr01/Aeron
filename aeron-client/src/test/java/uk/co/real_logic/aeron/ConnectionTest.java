@@ -19,12 +19,13 @@ import org.junit.Before;
 import org.junit.Test;
 import org.mockito.InOrder;
 import org.mockito.Mockito;
-import uk.co.real_logic.aeron.common.HeapPositionReporter;
+import uk.co.real_logic.aeron.protocol.DataHeaderFlyweight;
+import uk.co.real_logic.aeron.protocol.HeaderFlyweight;
+import uk.co.real_logic.aeron.logbuffer.*;
+import uk.co.real_logic.agrona.ErrorHandler;
 import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
-import uk.co.real_logic.aeron.common.concurrent.logbuffer.*;
-import uk.co.real_logic.aeron.common.protocol.DataHeaderFlyweight;
-import uk.co.real_logic.aeron.common.protocol.HeaderFlyweight;
-import uk.co.real_logic.agrona.status.PositionReporter;
+import uk.co.real_logic.agrona.concurrent.status.AtomicLongPosition;
+import uk.co.real_logic.agrona.concurrent.status.Position;
 
 import java.nio.ByteBuffer;
 
@@ -32,10 +33,8 @@ import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.is;
 import static org.mockito.Matchers.any;
 import static org.mockito.Matchers.eq;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.spy;
-import static org.mockito.Mockito.verify;
-import static uk.co.real_logic.aeron.common.concurrent.logbuffer.LogBufferDescriptor.*;
+import static org.mockito.Mockito.*;
+import static uk.co.real_logic.aeron.logbuffer.LogBufferDescriptor.*;
 import static uk.co.real_logic.agrona.BitUtil.align;
 
 public class ConnectionTest
@@ -52,61 +51,64 @@ public class ConnectionTest
         }
     }
 
-    private static final int MESSAGE_LENGTH = DataHeaderFlyweight.HEADER_LENGTH + DATA.length;
-    private static final int ALIGNED_FRAME_LENGTH = align(MESSAGE_LENGTH, FrameDescriptor.FRAME_ALIGNMENT);
     private static final long CORRELATION_ID = 0xC044E1AL;
     private static final int SESSION_ID = 0x5E55101D;
     private static final int STREAM_ID = 0xC400E;
     private static final int INITIAL_TERM_ID = 0xEE81D;
-    private static final long ZERO_INITIAL_POSITION =
-        computePosition(INITIAL_TERM_ID, 0, POSITION_BITS_TO_SHIFT, INITIAL_TERM_ID);
+    private static final int MESSAGE_LENGTH = DataHeaderFlyweight.HEADER_LENGTH + DATA.length;
+    private static final int ALIGNED_FRAME_LENGTH = align(MESSAGE_LENGTH, FrameDescriptor.FRAME_ALIGNMENT);
 
-    private final UnsafeBuffer rcvBuffer = new UnsafeBuffer(new byte[ALIGNED_FRAME_LENGTH]);
+    private final UnsafeBuffer rcvBuffer = new UnsafeBuffer(ByteBuffer.allocateDirect(ALIGNED_FRAME_LENGTH));
     private final DataHeaderFlyweight dataHeader = new DataHeaderFlyweight();
-    private final DataHandler mockDataHandler = mock(DataHandler.class);
-    private final PositionReporter positionReporter = spy(new HeapPositionReporter());
+    private final FragmentHandler mockFragmentHandler = mock(FragmentHandler.class);
+    private final Position position = spy(new AtomicLongPosition());
     private final LogBuffers logBuffers = mock(LogBuffers.class);
+    private final ErrorHandler errorHandler = mock(ErrorHandler.class);
 
-    private LogRebuilder[] rebuilders = new LogRebuilder[PARTITION_COUNT];
-    private LogReader[] readers = new LogReader[PARTITION_COUNT];
-    private Connection connection;
-    private int activeIndex;
+    private UnsafeBuffer[] atomicBuffers = new UnsafeBuffer[(PARTITION_COUNT * 2) + 1];
+    private UnsafeBuffer[] termBuffers = new UnsafeBuffer[PARTITION_COUNT];
 
     @Before
     public void setUp()
     {
+        dataHeader.wrap(rcvBuffer, 0);
+
         for (int i = 0; i < PARTITION_COUNT; i++)
         {
-            final UnsafeBuffer logBuffer = new UnsafeBuffer(ByteBuffer.allocateDirect(TERM_BUFFER_LENGTH));
-            final UnsafeBuffer metaDataBuffer = new UnsafeBuffer(ByteBuffer.allocateDirect(TERM_META_DATA_LENGTH));
-
-            rebuilders[i] = new LogRebuilder(logBuffer, metaDataBuffer);
-            readers[i] = new LogReader(logBuffer, metaDataBuffer);
+            atomicBuffers[i] = new UnsafeBuffer(ByteBuffer.allocateDirect(TERM_BUFFER_LENGTH));
+            termBuffers[i] = atomicBuffers[i];
         }
 
-        activeIndex = LogBufferDescriptor.indexByTerm(INITIAL_TERM_ID, INITIAL_TERM_ID);
-        dataHeader.wrap(rcvBuffer, 0);
+        for (int i = 0; i < PARTITION_COUNT; i++)
+        {
+            atomicBuffers[i + PARTITION_COUNT] = new UnsafeBuffer(ByteBuffer.allocateDirect(TERM_META_DATA_LENGTH));
+        }
+
+        atomicBuffers[atomicBuffers.length - 1] = new UnsafeBuffer(ByteBuffer.allocateDirect(LOG_META_DATA_LENGTH));
+
+        when(logBuffers.atomicBuffers()).thenReturn(atomicBuffers);
     }
 
     @Test
     public void shouldReportCorrectPositionOnReception()
     {
-        connection = createConnection(ZERO_INITIAL_POSITION);
+        final long initialPosition = computePosition(INITIAL_TERM_ID, 0, POSITION_BITS_TO_SHIFT, INITIAL_TERM_ID);
+        final Connection connection = createConnection(initialPosition);
 
-        insertDataFrame(offsetOfFrame(0));
+        insertDataFrame(INITIAL_TERM_ID, offsetOfFrame(0));
 
-        final int messages = connection.poll(Integer.MAX_VALUE);
+        final int messages = connection.poll(mockFragmentHandler, Integer.MAX_VALUE, errorHandler);
         assertThat(messages, is(1));
 
-        verify(mockDataHandler).onData(
+        verify(mockFragmentHandler).onFragment(
             any(UnsafeBuffer.class),
             eq(DataHeaderFlyweight.HEADER_LENGTH),
             eq(DATA.length),
             any(Header.class));
 
-        final InOrder inOrder = Mockito.inOrder(positionReporter);
-        inOrder.verify(positionReporter).position(ZERO_INITIAL_POSITION);
-        inOrder.verify(positionReporter).position(ZERO_INITIAL_POSITION + ALIGNED_FRAME_LENGTH);
+        final InOrder inOrder = Mockito.inOrder(position);
+        inOrder.verify(position).setOrdered(initialPosition);
+        inOrder.verify(position).setOrdered(initialPosition + ALIGNED_FRAME_LENGTH);
     }
 
     @Test
@@ -117,24 +119,22 @@ public class ConnectionTest
         final long initialPosition =
             computePosition(INITIAL_TERM_ID, initialTermOffset, POSITION_BITS_TO_SHIFT, INITIAL_TERM_ID);
 
-        rebuilders[activeIndex].tail(initialTermOffset);
+        final Connection connection = createConnection(initialPosition);
 
-        connection = createConnection(initialPosition);
+        insertDataFrame(INITIAL_TERM_ID, offsetOfFrame(initialMessageIndex));
 
-        insertDataFrame(offsetOfFrame(initialMessageIndex));
-
-        final int messages = connection.poll(Integer.MAX_VALUE);
+        final int messages = connection.poll(mockFragmentHandler, Integer.MAX_VALUE, errorHandler);
         assertThat(messages, is(1));
 
-        verify(mockDataHandler).onData(
+        verify(mockFragmentHandler).onFragment(
             any(UnsafeBuffer.class),
             eq(initialTermOffset + DataHeaderFlyweight.HEADER_LENGTH),
             eq(DATA.length),
             any(Header.class));
 
-        final InOrder inOrder = Mockito.inOrder(positionReporter);
-        inOrder.verify(positionReporter).position(initialPosition);
-        inOrder.verify(positionReporter).position(initialPosition + ALIGNED_FRAME_LENGTH);
+        final InOrder inOrder = Mockito.inOrder(position);
+        inOrder.verify(position).setOrdered(initialPosition);
+        inOrder.verify(position).setOrdered(initialPosition + ALIGNED_FRAME_LENGTH);
     }
 
     @Test
@@ -146,48 +146,44 @@ public class ConnectionTest
         final long initialPosition =
             computePosition(activeTermId, initialTermOffset, POSITION_BITS_TO_SHIFT, INITIAL_TERM_ID);
 
-        activeIndex = LogBufferDescriptor.indexByTerm(INITIAL_TERM_ID, activeTermId);
-        rebuilders[activeIndex].tail(initialTermOffset);
+        final Connection connection = createConnection(initialPosition);
 
-        connection = createConnection(initialPosition);
+        insertDataFrame(activeTermId, offsetOfFrame(initialMessageIndex));
 
-        insertDataFrame(offsetOfFrame(initialMessageIndex));
-
-        final int messages = connection.poll(Integer.MAX_VALUE);
+        final int messages = connection.poll(mockFragmentHandler, Integer.MAX_VALUE, errorHandler);
         assertThat(messages, is(1));
 
-        verify(mockDataHandler).onData(
+        verify(mockFragmentHandler).onFragment(
             any(UnsafeBuffer.class),
             eq(initialTermOffset + DataHeaderFlyweight.HEADER_LENGTH),
             eq(DATA.length),
             any(Header.class));
 
-        final InOrder inOrder = Mockito.inOrder(positionReporter);
-        inOrder.verify(positionReporter).position(initialPosition);
-        inOrder.verify(positionReporter).position(initialPosition + ALIGNED_FRAME_LENGTH);
+        final InOrder inOrder = Mockito.inOrder(position);
+        inOrder.verify(position).setOrdered(initialPosition);
+        inOrder.verify(position).setOrdered(initialPosition + ALIGNED_FRAME_LENGTH);
     }
 
     public Connection createConnection(final long initialPosition)
     {
-        return new Connection(
-            readers, SESSION_ID, INITIAL_TERM_ID, initialPosition,
-            CORRELATION_ID, mockDataHandler, positionReporter, logBuffers);
+        return new Connection(SESSION_ID, initialPosition, CORRELATION_ID, position, logBuffers);
     }
 
-    private void insertDataFrame(final int offset)
+    private void insertDataFrame(final int activeTermId, final int termOffset)
     {
         dataHeader.termId(INITIAL_TERM_ID)
                   .streamId(STREAM_ID)
                   .sessionId(SESSION_ID)
-                  .termOffset(offset)
+                  .termOffset(termOffset)
                   .frameLength(DATA.length + DataHeaderFlyweight.HEADER_LENGTH)
                   .headerType(HeaderFlyweight.HDR_TYPE_DATA)
                   .flags(DataHeaderFlyweight.BEGIN_AND_END_FLAGS)
                   .version(HeaderFlyweight.CURRENT_VERSION);
 
-        dataHeader.buffer().putBytes(dataHeader.dataOffset(), DATA);
+        rcvBuffer.putBytes(dataHeader.dataOffset(), DATA);
 
-        rebuilders[activeIndex].insert(offset, rcvBuffer, 0, ALIGNED_FRAME_LENGTH);
+        final int activeIndex = indexByTerm(INITIAL_TERM_ID, activeTermId);
+        TermRebuilder.insert(termBuffers[activeIndex], termOffset, rcvBuffer, ALIGNED_FRAME_LENGTH);
     }
 
     private int offsetOfFrame(final int index)

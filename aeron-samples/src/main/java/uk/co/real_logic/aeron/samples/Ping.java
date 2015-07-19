@@ -20,31 +20,31 @@ import uk.co.real_logic.aeron.Aeron;
 import uk.co.real_logic.aeron.FragmentAssemblyAdapter;
 import uk.co.real_logic.aeron.Publication;
 import uk.co.real_logic.aeron.Subscription;
-import uk.co.real_logic.aeron.common.concurrent.logbuffer.DataHandler;
+import uk.co.real_logic.aeron.logbuffer.FragmentHandler;
+import uk.co.real_logic.aeron.logbuffer.Header;
+import uk.co.real_logic.aeron.driver.MediaDriver;
 import uk.co.real_logic.agrona.CloseHelper;
 import uk.co.real_logic.agrona.DirectBuffer;
-import uk.co.real_logic.agrona.concurrent.BusySpinIdleStrategy;
 import uk.co.real_logic.agrona.concurrent.IdleStrategy;
+import uk.co.real_logic.agrona.concurrent.NoOpIdleStrategy;
 import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
-import uk.co.real_logic.aeron.common.concurrent.console.ContinueBarrier;
-import uk.co.real_logic.aeron.common.concurrent.logbuffer.Header;
-import uk.co.real_logic.aeron.driver.MediaDriver;
+import uk.co.real_logic.agrona.console.ContinueBarrier;
 
 import java.nio.ByteBuffer;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 /**
- * Ping component of Ping-Pong.
+ * Ping component of Ping-Pong latency test.
  *
  * Initiates and records times.
  */
 public class Ping
 {
-    private static final int PING_STREAM_ID = SampleConfiguration.PING_STREAM_ID;
-    private static final int PONG_STREAM_ID = SampleConfiguration.PONG_STREAM_ID;
     private static final String PING_CHANNEL = SampleConfiguration.PING_CHANNEL;
     private static final String PONG_CHANNEL = SampleConfiguration.PONG_CHANNEL;
+    private static final int PING_STREAM_ID = SampleConfiguration.PING_STREAM_ID;
+    private static final int PONG_STREAM_ID = SampleConfiguration.PONG_STREAM_ID;
     private static final int NUMBER_OF_MESSAGES = SampleConfiguration.NUMBER_OF_MESSAGES;
     private static final int WARMUP_NUMBER_OF_MESSAGES = SampleConfiguration.WARMUP_NUMBER_OF_MESSAGES;
     private static final int WARMUP_NUMBER_OF_ITERATIONS = SampleConfiguration.WARMUP_NUMBER_OF_ITERATIONS;
@@ -54,60 +54,76 @@ public class Ping
 
     private static final UnsafeBuffer ATOMIC_BUFFER = new UnsafeBuffer(ByteBuffer.allocateDirect(MESSAGE_LENGTH));
     private static final Histogram HISTOGRAM = new Histogram(TimeUnit.SECONDS.toNanos(10), 3);
-    private static final CountDownLatch PONG_CONNECTION_LATCH = new CountDownLatch(1);
+    private static volatile CountDownLatch pongConnectionLatch;
 
     public static void main(final String[] args) throws Exception
     {
-        SamplesUtil.useSharedMemoryOnLinux();
-
-        final MediaDriver driver = EMBEDDED_MEDIA_DRIVER ? MediaDriver.launch() : null;
+        final MediaDriver driver = EMBEDDED_MEDIA_DRIVER ? MediaDriver.launchEmbedded() : null;
         final Aeron.Context ctx = new Aeron.Context()
             .newConnectionHandler(Ping::newPongConnectionHandler);
+        final FragmentHandler fragmentHandler = new FragmentAssemblyAdapter(Ping::pongHandler);
+
+        if (EMBEDDED_MEDIA_DRIVER)
+        {
+            ctx.dirName(driver.contextDirName());
+        }
 
         System.out.println("Publishing Ping at " + PING_CHANNEL + " on stream Id " + PING_STREAM_ID);
         System.out.println("Subscribing Pong at " + PONG_CHANNEL + " on stream Id " + PONG_STREAM_ID);
-        System.out.println("Message size of " + MESSAGE_LENGTH + " bytes");
+        System.out.println("Message length of " + MESSAGE_LENGTH + " bytes");
 
-        final DataHandler dataHandler = new FragmentAssemblyAdapter(Ping::pongHandler);
-
-        try (final Aeron aeron = Aeron.connect(ctx);
-             final Publication pingPublication = aeron.addPublication(PING_CHANNEL, PING_STREAM_ID);
-             final Subscription pongSubscription = aeron.addSubscription(PONG_CHANNEL, PONG_STREAM_ID, dataHandler))
+        try (final Aeron aeron = Aeron.connect(ctx))
         {
-            System.out.println("Waiting for new connection from Pong...");
-
-            PONG_CONNECTION_LATCH.await();
-
             System.out.println(
                 "Warming up... " + WARMUP_NUMBER_OF_ITERATIONS + " iterations of " + WARMUP_NUMBER_OF_MESSAGES + " messages");
 
-            for (int i = 0; i < WARMUP_NUMBER_OF_ITERATIONS; i++)
+            pongConnectionLatch = new CountDownLatch(1);
+
+            try (final Publication publication = aeron.addPublication(PING_CHANNEL, PING_STREAM_ID);
+                 final Subscription subscription = aeron.addSubscription(PONG_CHANNEL, PONG_STREAM_ID))
             {
-                sendPingAndReceivePong(pingPublication, pongSubscription, WARMUP_NUMBER_OF_MESSAGES);
+                pongConnectionLatch.await();
+
+                for (int i = 0; i < WARMUP_NUMBER_OF_ITERATIONS; i++)
+                {
+                    sendPingAndReceivePong(fragmentHandler, publication, subscription, WARMUP_NUMBER_OF_MESSAGES);
+                }
             }
 
             final ContinueBarrier barrier = new ContinueBarrier("Execute again?");
+            pongConnectionLatch = new CountDownLatch(1);
 
-            do
+            try (final Publication publication = aeron.addPublication(PING_CHANNEL, PING_STREAM_ID);
+                 final Subscription subscription = aeron.addSubscription(PONG_CHANNEL, PONG_STREAM_ID))
             {
-                HISTOGRAM.reset();
-                System.out.println("Pinging " + NUMBER_OF_MESSAGES + " messages");
+                pongConnectionLatch.await();
+                Thread.sleep(1000);
 
-                sendPingAndReceivePong(pingPublication, pongSubscription, NUMBER_OF_MESSAGES);
+                do
+                {
+                    System.out.println("Pinging " + NUMBER_OF_MESSAGES + " messages");
+                    HISTOGRAM.reset();
+                    System.gc();
 
-                System.out.println("Histogram of RTT latencies in microseconds.");
-                HISTOGRAM.outputPercentileDistribution(System.out, 1000.0);
+                    sendPingAndReceivePong(fragmentHandler, publication, subscription, NUMBER_OF_MESSAGES);
+                    System.out.println("Histogram of RTT latencies in microseconds.");
+
+                    HISTOGRAM.outputPercentileDistribution(System.out, 1000.0);
+                }
+                while (barrier.await());
             }
-            while (barrier.await());
         }
 
         CloseHelper.quietClose(driver);
     }
 
     private static void sendPingAndReceivePong(
-        final Publication pingPublication, final Subscription pongSubscription, final int numMessages)
+        final FragmentHandler fragmentHandler,
+        final Publication publication,
+        final Subscription subscription,
+        final int numMessages)
     {
-        final IdleStrategy idleStrategy = new BusySpinIdleStrategy();
+        final IdleStrategy idleStrategy = new NoOpIdleStrategy();
 
         for (int i = 0; i < numMessages; i++)
         {
@@ -115,9 +131,9 @@ public class Ping
             {
                 ATOMIC_BUFFER.putLong(0, System.nanoTime());
             }
-            while (!pingPublication.offer(ATOMIC_BUFFER, 0, MESSAGE_LENGTH));
+            while (publication.offer(ATOMIC_BUFFER, 0, MESSAGE_LENGTH) < 0L);
 
-            while (pongSubscription.poll(FRAGMENT_COUNT_LIMIT) <= 0)
+            while (subscription.poll(fragmentHandler, FRAGMENT_COUNT_LIMIT) <= 0)
             {
                 idleStrategy.idle(0);
             }
@@ -133,11 +149,13 @@ public class Ping
     }
 
     private static void newPongConnectionHandler(
-        final String channel, final int streamId, final int sessionId, final String sourceInfo)
+        final String channel, final int streamId, final int sessionId, final long joiningPosition, final String sourceIdentity)
     {
-        if (channel.equals(PONG_CHANNEL) && PONG_STREAM_ID == streamId)
+        System.out.format("New connection: channel=%s streamId=%d session=%d\n", channel, streamId, sessionId);
+
+        if (PONG_STREAM_ID == streamId && PONG_CHANNEL.equals(channel))
         {
-            PONG_CONNECTION_LATCH.countDown();
+            pongConnectionLatch.countDown();
         }
     }
 }

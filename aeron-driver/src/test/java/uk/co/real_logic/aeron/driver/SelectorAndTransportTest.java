@@ -17,13 +17,17 @@ package uk.co.real_logic.aeron.driver;
 
 import org.junit.After;
 import org.junit.Test;
+import uk.co.real_logic.aeron.logbuffer.FrameDescriptor;
+import uk.co.real_logic.aeron.driver.event.EventLogger;
+import uk.co.real_logic.aeron.protocol.DataHeaderFlyweight;
+import uk.co.real_logic.aeron.protocol.HeaderFlyweight;
+import uk.co.real_logic.aeron.protocol.StatusMessageFlyweight;
+import uk.co.real_logic.aeron.driver.media.ReceiverUdpChannelTransport;
+import uk.co.real_logic.aeron.driver.media.SenderUdpChannelTransport;
+import uk.co.real_logic.aeron.driver.media.TransportPoller;
+import uk.co.real_logic.aeron.driver.media.UdpChannel;
 import uk.co.real_logic.agrona.BitUtil;
 import uk.co.real_logic.agrona.concurrent.UnsafeBuffer;
-import uk.co.real_logic.aeron.common.concurrent.logbuffer.FrameDescriptor;
-import uk.co.real_logic.aeron.common.event.EventLogger;
-import uk.co.real_logic.aeron.common.protocol.DataHeaderFlyweight;
-import uk.co.real_logic.aeron.common.protocol.HeaderFlyweight;
-import uk.co.real_logic.aeron.common.protocol.StatusMessageFlyweight;
 
 import java.net.InetSocketAddress;
 import java.nio.ByteBuffer;
@@ -45,7 +49,7 @@ public class SelectorAndTransportTest
     private static final UdpChannel SRC_DST = UdpChannel.parse("udp://localhost:" + SRC_PORT + "@localhost:" + RCV_PORT);
     private static final UdpChannel RCV_DST = UdpChannel.parse("udp://localhost:" + RCV_PORT);
 
-    private static final LossGenerator NO_LOSS = (address, length) -> false;
+    private static final LossGenerator NO_LOSS = (address, header, length) -> false;
 
     private final ByteBuffer byteBuffer = ByteBuffer.allocateDirect(256);
     private final UnsafeBuffer buffer = new UnsafeBuffer(byteBuffer);
@@ -58,10 +62,10 @@ public class SelectorAndTransportTest
 
     private final EventLogger mockTransportLogger = mock(EventLogger.class);
 
-    private final DataFrameHandler mockDataFrameHandler = mock(DataFrameHandler.class);
-    private final SetupFrameHandler mockSetupFrameHandler = mock(SetupFrameHandler.class);
-    private final NakFrameHandler mockNakFrameHandler = mock(NakFrameHandler.class);
-    private final StatusMessageFrameHandler mockStatusMessageFrameHandler = mock(StatusMessageFrameHandler.class);
+    private final DataPacketHandler mockDataPacketHandler = mock(DataPacketHandler.class);
+    private final SetupMessageHandler mockSetupMessageHandler = mock(SetupMessageHandler.class);
+    private final NakMessageHandler mockNakMessageHandler = mock(NakMessageHandler.class);
+    private final StatusMessageHandler mockStatusMessageHandler = mock(StatusMessageHandler.class);
 
     private TransportPoller transportPoller;
     private SenderUdpChannelTransport senderTransport;
@@ -100,11 +104,13 @@ public class SelectorAndTransportTest
     {
         transportPoller = new TransportPoller();
         receiverTransport = new ReceiverUdpChannelTransport(
-            RCV_DST, mockDataFrameHandler, mockSetupFrameHandler, mockTransportLogger, NO_LOSS);
+            RCV_DST, mockDataPacketHandler, mockSetupMessageHandler, mockTransportLogger, NO_LOSS);
         senderTransport = new SenderUdpChannelTransport(
-            SRC_DST, mockStatusMessageFrameHandler, mockNakFrameHandler, mockTransportLogger, NO_LOSS);
+            SRC_DST, mockStatusMessageHandler, mockNakMessageHandler, mockTransportLogger, NO_LOSS);
 
+        receiverTransport.openDatagramChannel();
         receiverTransport.registerForRead(transportPoller);
+        senderTransport.openDatagramChannel();
         senderTransport.registerForRead(transportPoller);
 
         processLoop(transportPoller, 5);
@@ -114,7 +120,7 @@ public class SelectorAndTransportTest
     public void shouldSendEmptyDataFrameUnicastFromSourceToReceiver() throws Exception
     {
         final AtomicInteger dataHeadersReceived = new AtomicInteger(0);
-        final DataFrameHandler dataFrameHandler =
+        final DataPacketHandler dataPacketHandler =
             (header, buffer, length, srcAddress) ->
             {
                 assertThat(header.version(), is((short)HeaderFlyweight.CURRENT_VERSION));
@@ -132,11 +138,13 @@ public class SelectorAndTransportTest
 
         transportPoller = new TransportPoller();
         receiverTransport = new ReceiverUdpChannelTransport(
-            RCV_DST, dataFrameHandler, mockSetupFrameHandler, mockTransportLogger, NO_LOSS);
+            RCV_DST, dataPacketHandler, mockSetupMessageHandler, mockTransportLogger, NO_LOSS);
         senderTransport = new SenderUdpChannelTransport(
-            SRC_DST, mockStatusMessageFrameHandler, mockNakFrameHandler, mockTransportLogger, NO_LOSS);
+            SRC_DST, mockStatusMessageHandler, mockNakMessageHandler, mockTransportLogger, NO_LOSS);
 
+        receiverTransport.openDatagramChannel();
         receiverTransport.registerForRead(transportPoller);
+        senderTransport.openDatagramChannel();
         senderTransport.registerForRead(transportPoller);
 
         encodeDataHeader.wrap(buffer, 0);
@@ -164,7 +172,7 @@ public class SelectorAndTransportTest
     {
         final AtomicInteger dataHeadersReceived = new AtomicInteger(0);
 
-        final DataFrameHandler dataFrameHandler =
+        final DataPacketHandler dataPacketHandler =
             (header, buffer, length, srcAddress) ->
             {
                 assertThat(header.version(), is((short)HeaderFlyweight.CURRENT_VERSION));
@@ -182,11 +190,13 @@ public class SelectorAndTransportTest
 
         transportPoller = new TransportPoller();
         receiverTransport = new ReceiverUdpChannelTransport(
-            RCV_DST, dataFrameHandler, mockSetupFrameHandler, mockTransportLogger, NO_LOSS);
+            RCV_DST, dataPacketHandler, mockSetupMessageHandler, mockTransportLogger, NO_LOSS);
         senderTransport = new SenderUdpChannelTransport(
-            SRC_DST, mockStatusMessageFrameHandler, mockNakFrameHandler, mockTransportLogger, NO_LOSS);
+            SRC_DST, mockStatusMessageHandler, mockNakMessageHandler, mockTransportLogger, NO_LOSS);
 
+        receiverTransport.openDatagramChannel();
         receiverTransport.registerForRead(transportPoller);
+        senderTransport.openDatagramChannel();
         senderTransport.registerForRead(transportPoller);
 
         encodeDataHeader.wrap(buffer, 0);
@@ -223,29 +233,31 @@ public class SelectorAndTransportTest
     public void shouldHandleSmFrameFromReceiverToSender() throws Exception
     {
         final AtomicInteger controlHeadersReceived = new AtomicInteger(0);
-        final StatusMessageFrameHandler statusMessageFrameHandler =
-            (header, buffer, length, srcAddress) ->
+        final StatusMessageHandler statusMessageHandler =
+            (statusMessage, srcAddress) ->
             {
-                assertThat(header.version(), is((short)HeaderFlyweight.CURRENT_VERSION));
-                assertThat(header.frameLength(), is(StatusMessageFlyweight.HEADER_LENGTH));
+                assertThat(statusMessage.version(), is((short)HeaderFlyweight.CURRENT_VERSION));
+                assertThat(statusMessage.frameLength(), is(StatusMessageFlyweight.HEADER_LENGTH));
                 controlHeadersReceived.incrementAndGet();
             };
 
         transportPoller = new TransportPoller();
         receiverTransport = new ReceiverUdpChannelTransport(
-            RCV_DST, mockDataFrameHandler, mockSetupFrameHandler, mockTransportLogger, NO_LOSS);
+            RCV_DST, mockDataPacketHandler, mockSetupMessageHandler, mockTransportLogger, NO_LOSS);
         senderTransport = new SenderUdpChannelTransport(
-            SRC_DST, statusMessageFrameHandler, mockNakFrameHandler, mockTransportLogger, NO_LOSS);
+            SRC_DST, statusMessageHandler, mockNakMessageHandler, mockTransportLogger, NO_LOSS);
 
+        receiverTransport.openDatagramChannel();
         receiverTransport.registerForRead(transportPoller);
+        senderTransport.openDatagramChannel();
         senderTransport.registerForRead(transportPoller);
 
         statusMessage.wrap(buffer, 0);
         statusMessage.streamId(STREAM_ID)
                      .sessionId(SESSION_ID)
-                     .termId(TERM_ID)
+                     .consumptionTermId(TERM_ID)
                      .receiverWindowLength(1000)
-                     .completedTermOffset(0)
+                     .consumptionTermOffset(0)
                      .version(HeaderFlyweight.CURRENT_VERSION)
                      .flags((short)0)
                      .headerType(HeaderFlyweight.HDR_TYPE_SM)
